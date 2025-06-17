@@ -12,6 +12,7 @@ from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
     BaseMessage,
+    HumanMessage,
 )
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from pydantic import Field
@@ -40,8 +41,10 @@ class ChatHeroku(BaseChatModel):
             inference_url="https://your-inference-api-url",
             temperature=0.7,
             max_tokens=256,
+            top_p=0.95,
             stop=["\n"],
             tool_schemas=[{"type": "function", ...}],
+            tool_choice="auto",  # or "required", or a dict for a specific tool
             stream=False,
         )
         result = chat([HumanMessage(content="Hello!")])
@@ -54,7 +57,7 @@ class ChatHeroku(BaseChatModel):
 
     """
 
-    model_name: Optional[str] = Field(default=None, alias="model")
+    model: Optional[str] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
     timeout: Optional[int] = None
@@ -63,7 +66,9 @@ class ChatHeroku(BaseChatModel):
     api_key: Optional[str] = None
     inference_url: Optional[str] = None
     tool_schemas: Optional[List[dict]] = None  # For tool calling
+    tool_choice: Optional[Any] = None  # Controls tool selection per Heroku API
     stream: bool = False
+    top_p: Optional[float] = None  # Nucleus sampling parameter
 
     @property
     def _llm_type(self) -> str:
@@ -71,7 +76,7 @@ class ChatHeroku(BaseChatModel):
 
     @property
     def _identifying_params(self) -> Dict[str, Any]:
-        return {"model_name": self.model_name}
+        return {"model": self.model}
 
     def _get_env(self, key: str, default: Optional[str] = None) -> Optional[str]:
         return os.environ.get(key, default)
@@ -83,7 +88,7 @@ class ChatHeroku(BaseChatModel):
         return self.inference_url or self._get_env("INFERENCE_URL")
 
     def _get_model(self) -> str:
-        return self.model_name or self._get_env("INFERENCE_MODEL_ID")
+        return self.model or self._get_env("INFERENCE_MODEL_ID")
 
     def _messages_to_api(self, messages: List[BaseMessage]) -> List[dict]:
         # Map LangChain message roles to API roles
@@ -144,8 +149,12 @@ class ChatHeroku(BaseChatModel):
             payload["stop"] = self.stop
         if self.tool_schemas:
             payload["tools"] = self.tool_schemas
+        if self.tool_choice is not None:
+            payload["tool_choice"] = self.tool_choice
         if self.stream:
             payload["stream"] = True
+        if self.top_p is not None:
+            payload["top_p"] = self.top_p
         timeout = self.timeout or 60
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         for _ in range(self.max_retries):
@@ -193,6 +202,12 @@ class ChatHeroku(BaseChatModel):
             payload["stop"] = self.stop
         if self.tool_schemas:
             payload["tools"] = self.tool_schemas
+        if self.tool_choice is not None:
+            payload["tool_choice"] = self.tool_choice
+        if self.stream:
+            payload["stream"] = True
+        if self.top_p is not None:
+            payload["top_p"] = self.top_p
         timeout = self.timeout or 60
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         for _ in range(self.max_retries):
@@ -215,20 +230,15 @@ class ChatHeroku(BaseChatModel):
         else:
             raise RuntimeError(f"Heroku Inference API stream call failed after {self.max_retries} retries: {last_exc}")
 
-    # TODO: Implement if ChatHeroku supports async streaming. Otherwise delete.
-    # async def _astream(
-    #     self,
-    #     messages: List[BaseMessage],
-    #     stop: Optional[List[str]] = None,
-    #     run_manager: Optional[AsyncCallbackManagerForLLMRun] = None,
-    #     **kwargs: Any,
-    # ) -> AsyncIterator[ChatGenerationChunk]:
+    def invoke(self, input, **kwargs):
+        # Accepts either a string or a list of BaseMessage
+        if isinstance(input, str):
+            messages = [HumanMessage(content=input)]
+        elif isinstance(input, list) and all(isinstance(m, BaseMessage) for m in input):
+            messages = input
+        else:
+            raise ValueError("Input must be a string or a list of BaseMessage objects.")
 
-    # TODO: Implement if ChatHeroku supports async generation. Otherwise delete.
-    # async def _agenerate(
-    #     self,
-    #     messages: List[BaseMessage],
-    #     stop: Optional[List[str]] = None,
-    #     run_manager: Optional[AsyncCallbackManagerForLLMRun] = None,
-    #     **kwargs: Any,
-    # ) -> ChatResult:
+        result = self._generate(messages, **kwargs)
+        # Return the content of the first generation for convenience
+        return result.generations[0].message
