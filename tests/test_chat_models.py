@@ -77,4 +77,4 @@ if __name__ == "__main__":
         else:
             print("Unknown result structure.")
     except Exception as e:
-        print("Error during ChatHeroku call:", e)
+        print("Error during ChatHeroku call:", e) 
