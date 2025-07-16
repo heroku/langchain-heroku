@@ -25,6 +25,7 @@ langchain-core = "^0.3.15"
 [tool.ruff.lint]
 select = ["E", "F", "I", "T201"]
 per-file-ignores = { "tests/**/*.py" = ["T201"] }
+line-length = 150
 
 [tool.coverage.run]
 omit = ["tests/*"]
