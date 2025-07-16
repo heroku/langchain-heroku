@@ -83,7 +83,6 @@ class MiaChat(BaseChatModel):
     max_tokens: Optional[int] = None
     timeout: Optional[int] = None
     stop: Optional[List[str]] = None
-    max_retries: int = 2
     api_key: Optional[str] = None
     inference_url: Optional[str] = None
     tools: Optional[List[dict]] = None  # For tool calling
@@ -195,7 +194,8 @@ class MiaChat(BaseChatModel):
             payload["extended_thinking"] = self.extended_thinking
         timeout = self.timeout or 60
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-        for _ in range(self.max_retries):
+        max_retries = 2  # Fixed retry count for client-side retries
+        for _ in range(max_retries):
             try:
                 with httpx.Client(timeout=timeout) as client:
                     resp = client.post(f"{url}/v1/chat/completions", json=payload, headers=headers)
@@ -205,7 +205,7 @@ class MiaChat(BaseChatModel):
             except Exception as e:
                 last_exc = e
         else:
-            raise RuntimeError(f"Heroku Inference API call failed after {self.max_retries} retries: {last_exc}")
+            raise RuntimeError(f"Heroku Inference API call failed after {max_retries} retries: {last_exc}")
         ai_msg = self._api_to_ai_message(data)
         return ChatResult(generations=[ChatGeneration(message=ai_msg)])
 
@@ -250,7 +250,8 @@ class MiaChat(BaseChatModel):
             payload["extended_thinking"] = self.extended_thinking
         timeout = self.timeout or 60
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-        for _ in range(self.max_retries):
+        max_retries = 2  # Fixed retry count for client-side retries
+        for _ in range(max_retries):
             try:
                 with httpx.stream("POST", f"{url}/v1/chat/completions", json=payload, headers=headers, timeout=timeout) as resp:
                     resp.raise_for_status()
@@ -290,7 +291,7 @@ class MiaChat(BaseChatModel):
             except Exception as e:
                 last_exc = e
         else:
-            raise RuntimeError(f"Heroku Inference API stream call failed after {self.max_retries} retries: {last_exc}")
+            raise RuntimeError(f"Heroku Inference API stream call failed after {max_retries} retries: {last_exc}")
 
     def invoke(self, input, **kwargs):
         # Accepts either a string or a list of BaseMessage

@@ -136,7 +136,6 @@ class MiaChatTestHarness:
             temperature=model_config.get("temperature", 0.1),
             max_tokens=model_config.get("max_tokens", 256),
             timeout=model_config.get("timeout", 60),
-            max_retries=model_config.get("max_retries", 2),
             streaming=model_config.get("streaming", False),
             top_p=model_config.get("top_p", 0.95),
         )

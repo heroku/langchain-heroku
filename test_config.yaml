@@ -6,7 +6,6 @@ model:
   temperature: 0.1          # Default temperature for tests
   max_tokens: 256          # Default max tokens
   timeout: 60              # Request timeout in seconds
-  max_retries: 2           # Number of retries for failed requests
   streaming: false         # Default streaming setting
   top_p: 0.95             # Nucleus sampling parameter
 

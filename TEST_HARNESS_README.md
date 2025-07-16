@@ -158,7 +158,6 @@ model:
   temperature: 0.1
   max_tokens: 256
   timeout: 60
-  max_retries: 2
   streaming: false
   top_p: 0.95
 ```
@@ -399,7 +398,6 @@ INFERENCE_MODEL_ID=your-model-id
 TEMPERATURE=0.1
 MAX_TOKENS=256
 TIMEOUT=60
-MAX_RETRIES=2
 TOP_P=0.95
 STREAMING=false
 LOG_LEVEL=INFO
