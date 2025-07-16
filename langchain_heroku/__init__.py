@@ -10,6 +10,6 @@ except metadata.PackageNotFoundError:
 del metadata  # optional, avoids polluting the results of dir(__package__)
 
 __all__ = [
-    "MiaChat", 
+    "MiaChat",
     "__version__",
 ]

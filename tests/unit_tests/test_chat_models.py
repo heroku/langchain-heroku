@@ -8,7 +8,7 @@ import pytest
 from langchain_heroku.chat_models import MiaChat
 
 
-class TestChatHerokuUnit():
+class TestChatHerokuUnit:
     @property
     def chat_model_class(self) -> Type[MiaChat]:
         return MiaChat
@@ -85,6 +85,7 @@ def test_chat_heroku_invoke_with_string():
 
 def test_chat_heroku_invoke_with_messages():
     from langchain_core.messages import HumanMessage
+
     mock_response = {
         "id": "chatcmpl-123",
         "object": "chat.completion",
@@ -215,32 +216,32 @@ def test_chat_heroku_message_types():
         SystemMessage,
         ToolMessage,
     )
-    
+
     llm = MiaChat(model="bird-brain-001", temperature=0)
-    
+
     # Test all message types
     messages = [
         SystemMessage(content="You are a helpful assistant."),
         HumanMessage(content="What's the weather like?"),
         AIMessage(content="I don't have access to weather data."),
         ToolMessage(content="The weather is sunny", tool_call_id="call_123"),
-        FunctionMessage(content="Temperature: 75°F", name="get_weather")
+        FunctionMessage(content="Temperature: 75°F", name="get_weather"),
     ]
-    
+
     api_messages = llm._messages_to_api(messages)
-    
+
     # Verify role mapping
     expected_roles = ["system", "user", "assistant", "tool", "tool"]
     actual_roles = [msg["role"] for msg in api_messages]
     assert actual_roles == expected_roles
-    
+
     # Verify content is preserved
     expected_contents = [
         "You are a helpful assistant.",
         "What's the weather like?",
         "I don't have access to weather data.",
         "The weather is sunny",
-        "Temperature: 75°F"
+        "Temperature: 75°F",
     ]
     actual_contents = [msg["content"] for msg in api_messages]
     assert actual_contents == expected_contents
@@ -272,7 +273,7 @@ def test_chat_heroku_streaming_parameter():
             llm = MiaChat(model="bird-brain-001", temperature=0, streaming=True)
             llm.invoke("Test streaming")
             args, kwargs = mock_client.post.call_args
-            assert kwargs["json"]["stream"] == True
+            assert kwargs["json"]["stream"]
 
 
 def test_chat_heroku_tools_parameter():
@@ -331,7 +332,7 @@ def test_chat_heroku_allow_ignored_params():
             llm = MiaChat(model="bird-brain-001", temperature=0)
             llm.invoke("Test allow_ignored_params")
             args, kwargs = mock_client.post.call_args
-            assert kwargs["json"]["allow_ignored_params"] == True
+            assert kwargs["json"]["allow_ignored_params"]
 
 
 def test_chat_heroku_extended_thinking():
@@ -375,16 +376,16 @@ def test_chat_heroku_extended_thinking_streaming():
             mock_response.iter_lines.return_value = [
                 b'data: {"choices": [{"delta": {"content": "Hello"}}]}',
                 b'data: {"choices": [{"delta": {"content": " world"}}]}',
-                b'data: [DONE]'
+                b"data: [DONE]",
             ]
             mock_stream.return_value.__enter__.return_value = mock_response
 
             llm = MiaChat(model="bird-brain-001", temperature=0, extended_thinking=extended_thinking_config, streaming=True)
             messages = [type("Msg", (), {"role": "user", "content": "Say hello"})()]
-            
-            # Collect all chunks
-            chunks = list(llm._stream(messages))
-            
+
+            # Trigger streaming to ensure extended_thinking is included in the payload
+            list(llm._stream(messages))
+
             # Check that extended_thinking was included in the payload
             args, kwargs = mock_stream.call_args
             assert kwargs["json"]["extended_thinking"] == extended_thinking_config
@@ -411,11 +412,11 @@ if __name__ == "__main__":
         print("Type of result:", type(result))
         print("Result repr:", repr(result))
         # Try to print content if possible
-        if hasattr(result, 'generations'):
+        if hasattr(result, "generations"):
             print("ChatHeroku response:", result.generations[0].message.content)
-        elif hasattr(result, 'content'):
+        elif hasattr(result, "content"):
             print("ChatHeroku response:", result.content)
         else:
             print("Unknown result structure.")
     except Exception as e:
-        print("Error during ChatHeroku call:", e) 
+        print("Error during ChatHeroku call:", e)

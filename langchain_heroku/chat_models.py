@@ -42,7 +42,7 @@ class MiaChat(BaseChatModel):
         from langchain_core.messages import (
             HumanMessage, SystemMessage, AIMessage, ToolMessage, FunctionMessage
         )
-        
+
         messages = [
             SystemMessage(content="You are a helpful assistant."),
             HumanMessage(content="What's the weather like?"),
@@ -50,7 +50,7 @@ class MiaChat(BaseChatModel):
             ToolMessage(content="The weather is sunny", tool_call_id="call_123"),
             FunctionMessage(content="Temperature: 75°F", name="get_weather")
         ]
-        
+
         chat = MiaChat()
         result = chat(messages)
 
@@ -129,7 +129,7 @@ class MiaChat(BaseChatModel):
             else:
                 # Fallback to role attribute or type for custom message types
                 role = getattr(m, "role", None) or getattr(m, "type", "user")
-            
+
             content = getattr(m, "content", "")
             api_msgs.append({"role": role, "content": content})
         return api_msgs
@@ -258,17 +258,17 @@ class MiaChat(BaseChatModel):
                     for line in resp.iter_lines():
                         if not line or line.strip() == b"":
                             continue
-                        
+
                         # Convert bytes to string if needed
                         if isinstance(line, bytes):
-                            line_str = line.decode('utf-8')
+                            line_str = line.decode("utf-8")
                         else:
                             line_str = str(line)
-                        
+
                         # Skip event lines (they start with "event:")
                         if line_str.startswith("event:"):
                             continue
-                        
+
                         # Parse data lines (they start with "data:")
                         if line_str.startswith("data:"):
                             # Extract JSON data after "data:" prefix
