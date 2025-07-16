@@ -102,13 +102,13 @@ class MiaChat(BaseChatModel):
     def _get_env(self, key: str, default: Optional[str] = None) -> Optional[str]:
         return os.environ.get(key, default)
 
-    def _get_api_key(self) -> str:
+    def _get_api_key(self) -> Optional[str]:
         return self.api_key or self._get_env("INFERENCE_KEY") or self._get_env("HEROKU_API_KEY")
 
-    def _get_inference_url(self) -> str:
+    def _get_inference_url(self) -> Optional[str]:
         return self.inference_url or self._get_env("INFERENCE_URL")
 
-    def _get_model(self) -> str:
+    def _get_model(self) -> Optional[str]:
         return self.model or self._get_env("INFERENCE_MODEL_ID")
 
     def _messages_to_api(self, messages: List[BaseMessage]) -> List[dict]:
@@ -128,9 +128,9 @@ class MiaChat(BaseChatModel):
                 role = "tool"  # FunctionMessage maps to tool role for backward compatibility
             else:
                 # Fallback to role attribute or type for custom message types
-                role = getattr(m, "role", None) or getattr(m, "type", "user")
+                role = getattr(m, "role", None) or getattr(m, "type", "user") or "user"
 
-            content = getattr(m, "content", "")
+            content = str(getattr(m, "content", ""))
             api_msgs.append({"role": role, "content": content})
         return api_msgs
 
@@ -146,11 +146,13 @@ class MiaChat(BaseChatModel):
             "output_tokens": usage.get("completion_tokens"),
             "total_tokens": usage.get("total_tokens"),
         }
+        # Store usage metadata in additional_kwargs since AIMessage doesn't have usage_metadata parameter
+        if usage_metadata:
+            additional_kwargs["usage_metadata"] = usage_metadata
         return AIMessage(
             content=content,
             additional_kwargs=additional_kwargs,
             response_metadata=resp,
-            usage_metadata=usage_metadata,
         )
 
     def _generate(
@@ -292,16 +294,3 @@ class MiaChat(BaseChatModel):
                 last_exc = e
         else:
             raise RuntimeError(f"Heroku Inference API stream call failed after {max_retries} retries: {last_exc}")
-
-    def invoke(self, input, **kwargs):
-        # Accepts either a string or a list of BaseMessage
-        if isinstance(input, str):
-            messages = [HumanMessage(content=input)]
-        elif isinstance(input, list) and all(isinstance(m, BaseMessage) for m in input):
-            messages = input
-        else:
-            raise ValueError("Input must be a string or a list of BaseMessage objects.")
-
-        result = self._generate(messages, **kwargs)
-        # Return the content of the first generation for convenience
-        return result.generations[0].message

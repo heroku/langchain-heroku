@@ -23,7 +23,7 @@ class TestChatHerokuUnit:
         }
 
 
-def test_chat_heroku_basic_usage():
+def test_chat_heroku_basic_usage() -> None:
     # Mock response from Heroku Inference API
     mock_response = {
         "id": "chatcmpl-123",
@@ -51,11 +51,12 @@ def test_chat_heroku_basic_usage():
                 type("Msg", (), {"role": "user", "content": "Say hello"})(),
             ]
             result = llm._generate(messages)
-            assert result.generations[0].message.content == "Hello! How can I help you?"
-            assert result.generations[0].message.usage_metadata["total_tokens"] == 12
+            ai_msg = result.generations[0].message  # type: ignore[attr-defined]
+            assert ai_msg.content == "Hello! How can I help you?"
+            assert ai_msg.additional_kwargs["usage_metadata"]["total_tokens"] == 12
 
 
-def test_chat_heroku_invoke_with_string():
+def test_chat_heroku_invoke_with_string() -> None:
     mock_response = {
         "id": "chatcmpl-123",
         "object": "chat.completion",
@@ -79,11 +80,12 @@ def test_chat_heroku_invoke_with_string():
 
             llm = MiaChat(model="bird-brain-001", temperature=0)
             result = llm.invoke("Say hello")
-            assert result.content == "Hello! How can I help you?"
-            assert result.usage_metadata["total_tokens"] == 12
+            ai_msg = result  # type: ignore[attr-defined]
+            assert ai_msg.content == "Hello! How can I help you?"
+            assert ai_msg.additional_kwargs["usage_metadata"]["total_tokens"] == 12
 
 
-def test_chat_heroku_invoke_with_messages():
+def test_chat_heroku_invoke_with_messages() -> None:
     from langchain_core.messages import HumanMessage
 
     mock_response = {
@@ -110,17 +112,18 @@ def test_chat_heroku_invoke_with_messages():
             llm = MiaChat(model="bird-brain-001", temperature=0)
             messages = [HumanMessage(content="Say hello")]
             result = llm.invoke(messages)
-            assert result.content == "Hello! How can I help you?"
-            assert result.usage_metadata["total_tokens"] == 12
+            ai_msg = result  # type: ignore[attr-defined]
+            assert ai_msg.content == "Hello! How can I help you?"
+            assert ai_msg.additional_kwargs["usage_metadata"]["total_tokens"] == 12
 
 
-def test_chat_heroku_invoke_invalid_input():
+def test_chat_heroku_invoke_invalid_input() -> None:
     llm = MiaChat(model="bird-brain-001", temperature=0)
     with pytest.raises(ValueError):
-        llm.invoke(12345)  # Not a string or list of BaseMessage
+        llm.invoke(12345)  # type: ignore[arg-type]  # Not a string or list of BaseMessage
 
 
-def test_chat_heroku_tool_choice_string():
+def test_chat_heroku_tool_choice_string() -> None:
     mock_response = {
         "id": "chatcmpl-123",
         "object": "chat.completion",
@@ -149,7 +152,7 @@ def test_chat_heroku_tool_choice_string():
             assert kwargs["json"]["tool_choice"] == "auto"
 
 
-def test_chat_heroku_tool_choice_dict():
+def test_chat_heroku_tool_choice_dict() -> None:
     mock_response = {
         "id": "chatcmpl-123",
         "object": "chat.completion",
@@ -179,7 +182,7 @@ def test_chat_heroku_tool_choice_dict():
             assert kwargs["json"]["tool_choice"] == tool_choice_dict
 
 
-def test_chat_heroku_top_p():
+def test_chat_heroku_top_p() -> None:
     mock_response = {
         "id": "chatcmpl-123",
         "object": "chat.completion",
@@ -207,7 +210,7 @@ def test_chat_heroku_top_p():
             assert kwargs["json"]["top_p"] == 0.95
 
 
-def test_chat_heroku_message_types():
+def test_chat_heroku_message_types() -> None:
     """Test that all message types are properly mapped to API roles."""
     from langchain_core.messages import (
         AIMessage,
@@ -247,7 +250,7 @@ def test_chat_heroku_message_types():
     assert actual_contents == expected_contents
 
 
-def test_chat_heroku_streaming_parameter():
+def test_chat_heroku_streaming_parameter() -> None:
     """Test that the streaming parameter is properly handled."""
     mock_response = {
         "id": "chatcmpl-123",
@@ -276,7 +279,7 @@ def test_chat_heroku_streaming_parameter():
             assert kwargs["json"]["stream"]
 
 
-def test_chat_heroku_tools_parameter():
+def test_chat_heroku_tools_parameter() -> None:
     """Test that the tools parameter is properly handled."""
     mock_response = {
         "id": "chatcmpl-123",
@@ -306,7 +309,7 @@ def test_chat_heroku_tools_parameter():
             assert kwargs["json"]["tools"] == tools
 
 
-def test_chat_heroku_allow_ignored_params():
+def test_chat_heroku_allow_ignored_params() -> None:
     """Test that allow_ignored_params is included in the payload."""
     mock_response = {
         "id": "chatcmpl-123",
@@ -335,7 +338,7 @@ def test_chat_heroku_allow_ignored_params():
             assert kwargs["json"]["allow_ignored_params"]
 
 
-def test_chat_heroku_extended_thinking():
+def test_chat_heroku_extended_thinking() -> None:
     """Test that the extended_thinking parameter is properly handled."""
     mock_response = {
         "id": "chatcmpl-123",
@@ -365,7 +368,7 @@ def test_chat_heroku_extended_thinking():
             assert kwargs["json"]["extended_thinking"] == extended_thinking_config
 
 
-def test_chat_heroku_extended_thinking_streaming():
+def test_chat_heroku_extended_thinking_streaming() -> None:
     """Test that the extended_thinking parameter is properly handled in streaming mode."""
     extended_thinking_config = {"enabled": True, "budget_tokens": 1024, "include_reasoning": True}
     with patch.dict("os.environ", {"INFERENCE_URL": "https://dummy.url", "INFERENCE_KEY": "dummy-key"}):
