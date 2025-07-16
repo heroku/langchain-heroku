@@ -66,6 +66,7 @@ class MiaChat(BaseChatModel):
             tools=[{"type": "function", ...}],
             tool_choice="auto",  # or "required", or a dict for a specific tool
             streaming=False,
+            extended_thinking={"enabled": True},  # For Claude Sonnet 3.7 & 4
         )
         result = chat([HumanMessage(content="Hello!")])
         print(result.generations[0].message.content)
@@ -89,6 +90,7 @@ class MiaChat(BaseChatModel):
     tool_choice: Optional[Any] = None  # Controls tool selection per Heroku API
     streaming: bool = False
     top_p: Optional[float] = None  # Nucleus sampling parameter
+    extended_thinking: Optional[Dict[str, Any]] = None  # Extended thinking for Claude Sonnet 3.7 & 4
 
     @property
     def _llm_type(self) -> str:
@@ -189,6 +191,8 @@ class MiaChat(BaseChatModel):
             payload["stream"] = True
         if self.top_p is not None:
             payload["top_p"] = self.top_p
+        if self.extended_thinking is not None:
+            payload["extended_thinking"] = self.extended_thinking
         timeout = self.timeout or 60
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         for _ in range(self.max_retries):
@@ -242,6 +246,8 @@ class MiaChat(BaseChatModel):
             payload["stream"] = True
         if self.top_p is not None:
             payload["top_p"] = self.top_p
+        if self.extended_thinking is not None:
+            payload["extended_thinking"] = self.extended_thinking
         timeout = self.timeout or 60
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         for _ in range(self.max_retries):

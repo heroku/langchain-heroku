@@ -187,6 +187,24 @@ class TestProductionEndpoint:
             assert os.getenv("INFERENCE_KEY") is not None
             assert os.getenv("INFERENCE_MODEL_ID") is not None
 
+    def test_production_extended_thinking(self):
+        """Test extended_thinking parameter against production endpoint."""
+        # Only test with Claude Sonnet models that support extended thinking
+        model_id = os.getenv("INFERENCE_MODEL_ID", "")
+        if not any(sonnet_model in model_id.lower() for sonnet_model in ["sonnet", "claude-3-7-sonnet", "claude-4-sonnet"]):
+            pytest.skip("Extended thinking is only supported on Claude Sonnet models")
+        
+        extended_thinking_config = {"enabled": True, "budget_tokens": 1024, "include_reasoning": True}
+        chat = MiaChat(extended_thinking=extended_thinking_config)
+        messages = [HumanMessage(content="Solve this step by step: What is 15% of 200?")]
+        
+        result = chat.invoke(messages)
+        
+        assert result.content is not None
+        assert len(result.content) > 0
+        # The response should show reasoning steps
+        assert any(keyword in result.content.lower() for keyword in ["step", "calculate", "multiply", "divide", "30"])
+
 
 # Skip all tests if environment variables are not set
 def pytest_configure(config):

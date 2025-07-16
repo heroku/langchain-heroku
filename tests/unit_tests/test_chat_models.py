@@ -327,6 +327,62 @@ def test_chat_heroku_allow_ignored_params():
             assert kwargs["json"]["allow_ignored_params"] == True
 
 
+def test_chat_heroku_extended_thinking():
+    """Test that the extended_thinking parameter is properly handled."""
+    mock_response = {
+        "id": "chatcmpl-123",
+        "object": "chat.completion",
+        "created": 1234567890,
+        "model": "bird-brain-001",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "Extended thinking test"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12},
+    }
+    extended_thinking_config = {"enabled": True, "budget_tokens": 1024, "include_reasoning": True}
+    with patch.dict("os.environ", {"INFERENCE_URL": "https://dummy.url", "INFERENCE_KEY": "dummy-key"}):
+        with patch("httpx.Client") as mock_client_class:
+            mock_client = MagicMock()
+            mock_client.post.return_value.json.return_value = mock_response
+            mock_client.post.return_value.raise_for_status.return_value = None
+            mock_client_class.return_value.__enter__.return_value = mock_client
+
+            llm = MiaChat(model="bird-brain-001", temperature=0, extended_thinking=extended_thinking_config)
+            llm.invoke("Test extended thinking")
+            args, kwargs = mock_client.post.call_args
+            assert kwargs["json"]["extended_thinking"] == extended_thinking_config
+
+
+def test_chat_heroku_extended_thinking_streaming():
+    """Test that the extended_thinking parameter is properly handled in streaming mode."""
+    extended_thinking_config = {"enabled": True, "budget_tokens": 1024, "include_reasoning": True}
+    with patch.dict("os.environ", {"INFERENCE_URL": "https://dummy.url", "INFERENCE_KEY": "dummy-key"}):
+        with patch("httpx.stream") as mock_stream:
+            # Mock the streaming response
+            mock_response = MagicMock()
+            mock_response.raise_for_status.return_value = None
+            mock_response.iter_lines.return_value = [
+                b'data: {"choices": [{"delta": {"content": "Hello"}}]}',
+                b'data: {"choices": [{"delta": {"content": " world"}}]}',
+                b'data: [DONE]'
+            ]
+            mock_stream.return_value.__enter__.return_value = mock_response
+
+            llm = MiaChat(model="bird-brain-001", temperature=0, extended_thinking=extended_thinking_config, streaming=True)
+            messages = [type("Msg", (), {"role": "user", "content": "Say hello"})()]
+            
+            # Collect all chunks
+            chunks = list(llm._stream(messages))
+            
+            # Check that extended_thinking was included in the payload
+            args, kwargs = mock_stream.call_args
+            assert kwargs["json"]["extended_thinking"] == extended_thinking_config
+
+
 # Optionally, add more tests for error handling, streaming, etc.
 
 if __name__ == "__main__":
