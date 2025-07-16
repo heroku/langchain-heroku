@@ -8,7 +8,7 @@ on:
 
 jobs:
   build-and-test:
-    runs-on: ubuntu-latest
+    runs-on: pub-hk-ubuntu-22.04-small
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -32,11 +32,22 @@ jobs:
           restore-keys: |
             venv-${{ runner.os }}-
 
-      - name: Install dependencies (including test)
-        run: poetry install --with test
+      - name: Install dependencies (including test, lint, and typing)
+        run: poetry install --with test,lint,typing
+
+      - name: Run linting checks
+        run: |
+          poetry run ruff check .
+          poetry run ruff format . --check
+
+      - name: Run type checking
+        run: poetry run mypy .
 
       - name: Run tests
         run: poetry run pytest --maxfail=1 --disable-warnings --tb=short
+
+      - name: Run integration tests
+        run: poetry run pytest tests/integration_tests/ --maxfail=1 --disable-warnings --tb=short
 
       - name: Upload pytest results (optional)
         if: always()
