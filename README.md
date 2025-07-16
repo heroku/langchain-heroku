@@ -43,13 +43,38 @@ And you should configure credentials by setting the following environment variab
 
 * TODO: fill this out
 
-## Running Tests
+## 🧪 Running Tests
 
-To run all tests:
+This project uses [Poetry](https://python-poetry.org/) for dependency management and [pytest](https://docs.pytest.org/) for testing.
+
+### 1. Install dependencies (including test dependencies)
 
 ```bash
-pytest
+poetry install --with test
 ```
+
+### 2. Run the test suite
+
+```bash
+poetry run pytest
+```
+
+Or to run a specific test file:
+
+```bash
+poetry run pytest tests/unit_tests/test_chat_models.py
+```
+
+### 3. (Optional) Run with verbose output
+
+```bash
+poetry run pytest -v
+```
+
+### Notes
+
+- Make sure you are using a compatible Python version (see `pyproject.toml`).
+- If you add new test dependencies, add them to the `[tool.poetry.group.test.dependencies]` section in `pyproject.toml`.
 
 ## Chat Models
 

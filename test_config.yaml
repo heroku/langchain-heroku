@@ -1,0 +1,47 @@
+# Test Harness Configuration for MiaChat
+# Copy this file and modify it according to your needs
+
+# Model configuration
+model:
+  temperature: 0.1          # Default temperature for tests
+  max_tokens: 256          # Default max tokens
+  timeout: 60              # Request timeout in seconds
+  max_retries: 2           # Number of retries for failed requests
+  streaming: false         # Default streaming setting
+  top_p: 0.95             # Nucleus sampling parameter
+
+# Test configuration
+tests:
+  # Enable/disable specific tests
+  basic_conversation: true
+  system_message: true
+  multi_turn_conversation: true
+  string_input: true
+  tool_messages: true
+  function_messages: true
+  streaming: true
+  temperature_variation: true
+  max_tokens: true
+  stop_sequences: true
+  error_handling: true
+
+# Custom test prompts (optional)
+custom_prompts:
+  basic: "Hello! How are you today?"
+  system: "You are a helpful assistant that speaks in a friendly tone."
+  joke: "Tell me a short joke."
+  story: "Write a short story about a cat."
+  weather: "What's the weather like?"
+  math: "What is 2 + 2?"
+
+# Performance thresholds (optional)
+performance:
+  max_response_time: 30.0    # Maximum acceptable response time in seconds
+  min_response_length: 10    # Minimum expected response length
+  max_response_length: 1000  # Maximum expected response length
+
+# Logging configuration
+logging:
+  level: "INFO"              # DEBUG, INFO, WARNING, ERROR
+  save_responses: true       # Save full responses to results file
+  save_metadata: true        # Save usage metadata to results file 

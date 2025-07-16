@@ -1,6 +1,6 @@
 from importlib import metadata
 
-from langchain_heroku.chat_models import ChatHeroku
+from langchain_heroku.chat_models import MiaChat
 
 try:
     __version__ = metadata.version(__package__)
@@ -10,6 +10,6 @@ except metadata.PackageNotFoundError:
 del metadata  # optional, avoids polluting the results of dir(__package__)
 
 __all__ = [
-    "ChatHeroku", 
+    "MiaChat", 
     "__version__",
 ]

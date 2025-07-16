@@ -1,0 +1,16 @@
+# Test Harness Dependencies
+# These are the additional dependencies needed to run the test harness
+
+# Core dependencies (should already be installed with langchain-heroku)
+langchain-core>=0.1.0
+httpx>=0.24.0
+
+# Test harness specific dependencies
+pyyaml>=6.0
+pytest>=7.0.0
+pytest-mock>=3.10.0
+python-dotenv>=1.0.0
+
+# Optional: For enhanced test reporting
+pytest-html>=3.1.0
+pytest-xdist>=3.0.0  # For parallel test execution 

@@ -6,7 +6,7 @@ build-backend = "poetry.core.masonry.api"
 name = "langchain-heroku"
 version = "0.1.0"
 description = "An integration package connecting Heroku and LangChain"
-authors = []
+authors = ["Heroku"]
 readme = "README.md"
 repository = "https://github.com/langchain-ai/langchain"
 license = "MIT"
@@ -32,6 +32,7 @@ omit = ["tests/*"]
 addopts = "--strict-markers --strict-config --durations=5"
 markers = [
     "compile: mark placeholder test used to compile integration tests without running them",
+    "slow: mark test as slow running",
 ]
 
 [tool.poetry.group.test]
@@ -57,6 +58,7 @@ pytest-asyncio = "^0.23.2"
 pytest-socket = "^0.7.0"
 pytest-watcher = "^0.3.4"
 langchain-tests = "^0.3.5"
+python-dotenv = "^1.0.0"
 
 [tool.poetry.group.codespell.dependencies]
 codespell = "^2.2.6"

@@ -2,6 +2,7 @@
 
 from typing import Any, Dict, Iterator, List, Optional
 import os
+import json
 import httpx
 
 from langchain_core.callbacks import (
@@ -13,11 +14,14 @@ from langchain_core.messages import (
     AIMessageChunk,
     BaseMessage,
     HumanMessage,
+    SystemMessage,
+    ToolMessage,
+    FunctionMessage,
 )
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from pydantic import Field
 
-class ChatHeroku(BaseChatModel):
+class MiaChat(BaseChatModel):
     """
     Heroku chat model integration using the Inference API v1 /v1/chat/completions endpoint.
 
@@ -27,31 +31,47 @@ class ChatHeroku(BaseChatModel):
         export INFERENCE_MODEL_ID="your-model-id"
 
     Basic usage:
-        from langchain_heroku.chat_models import ChatHeroku
+        from langchain_heroku.chat_models import MiaChat
         from langchain_core.messages import HumanMessage
 
-        chat = ChatHeroku()
+        chat = MiaChat()
         result = chat([HumanMessage(content="Hello!")])
         print(result.generations[0].message.content)
 
+    Usage with all message types:
+        from langchain_core.messages import (
+            HumanMessage, SystemMessage, AIMessage, ToolMessage, FunctionMessage
+        )
+        
+        messages = [
+            SystemMessage(content="You are a helpful assistant."),
+            HumanMessage(content="What's the weather like?"),
+            AIMessage(content="I don't have access to weather data."),
+            ToolMessage(content="The weather is sunny", tool_call_id="call_123"),
+            FunctionMessage(content="Temperature: 75°F", name="get_weather")
+        ]
+        
+        chat = MiaChat()
+        result = chat(messages)
+
     Usage with explicit parameters:
-        chat = ChatHeroku(
-            model_name="your-model-id",
+        chat = MiaChat(
+            model="your-model-id",
             api_key="your-heroku-inference-api-key",
             inference_url="https://your-inference-api-url",
             temperature=0.7,
             max_tokens=256,
             top_p=0.95,
             stop=["\n"],
-            tool_schemas=[{"type": "function", ...}],
+            tools=[{"type": "function", ...}],
             tool_choice="auto",  # or "required", or a dict for a specific tool
-            stream=False,
+            streaming=False,
         )
         result = chat([HumanMessage(content="Hello!")])
         print(result.generations[0].message.content)
 
     Streaming usage:
-        chat = ChatHeroku(stream=True)
+        chat = MiaChat(streaming=True)
         for chunk in chat.stream([HumanMessage(content="Hello!")]):
             print(chunk.message.content, end="")
 
@@ -65,14 +85,14 @@ class ChatHeroku(BaseChatModel):
     max_retries: int = 2
     api_key: Optional[str] = None
     inference_url: Optional[str] = None
-    tool_schemas: Optional[List[dict]] = None  # For tool calling
+    tools: Optional[List[dict]] = None  # For tool calling
     tool_choice: Optional[Any] = None  # Controls tool selection per Heroku API
-    stream: bool = False
+    streaming: bool = False
     top_p: Optional[float] = None  # Nucleus sampling parameter
 
     @property
     def _llm_type(self) -> str:
-        return "chat-heroku"
+        return "mia"
 
     @property
     def _identifying_params(self) -> Dict[str, Any]:
@@ -91,11 +111,24 @@ class ChatHeroku(BaseChatModel):
         return self.model or self._get_env("INFERENCE_MODEL_ID")
 
     def _messages_to_api(self, messages: List[BaseMessage]) -> List[dict]:
-        # Map LangChain message roles to API roles
-        role_map = {"human": "user", "ai": "assistant", "system": "system", "user": "user", "assistant": "assistant", "tool": "tool"}
+        # Map LangChain message types to API roles with explicit type checking
         api_msgs = []
         for m in messages:
-            role = getattr(m, "role", None) or role_map.get(getattr(m, "type", ""), "user")
+            # Handle specific message types explicitly
+            if isinstance(m, SystemMessage):
+                role = "system"
+            elif isinstance(m, HumanMessage):
+                role = "user"
+            elif isinstance(m, AIMessage):
+                role = "assistant"
+            elif isinstance(m, ToolMessage):
+                role = "tool"
+            elif isinstance(m, FunctionMessage):
+                role = "tool"  # FunctionMessage maps to tool role for backward compatibility
+            else:
+                # Fallback to role attribute or type for custom message types
+                role = getattr(m, "role", None) or getattr(m, "type", "user")
+            
             content = getattr(m, "content", "")
             api_msgs.append({"role": role, "content": content})
         return api_msgs
@@ -138,6 +171,7 @@ class ChatHeroku(BaseChatModel):
         payload = {
             "model": model,
             "messages": self._messages_to_api(messages),
+            "allow_ignored_params": True,
         }
         if self.temperature is not None:
             payload["temperature"] = self.temperature
@@ -147,11 +181,11 @@ class ChatHeroku(BaseChatModel):
             payload["stop"] = stop
         elif self.stop is not None:
             payload["stop"] = self.stop
-        if self.tool_schemas:
-            payload["tools"] = self.tool_schemas
+        if self.tools:
+            payload["tools"] = self.tools
         if self.tool_choice is not None:
             payload["tool_choice"] = self.tool_choice
-        if self.stream:
+        if self.streaming:
             payload["stream"] = True
         if self.top_p is not None:
             payload["top_p"] = self.top_p
@@ -200,11 +234,11 @@ class ChatHeroku(BaseChatModel):
             payload["stop"] = stop
         elif self.stop is not None:
             payload["stop"] = self.stop
-        if self.tool_schemas:
-            payload["tools"] = self.tool_schemas
+        if self.tools:
+            payload["tools"] = self.tools
         if self.tool_choice is not None:
             payload["tool_choice"] = self.tool_choice
-        if self.stream:
+        if self.streaming:
             payload["stream"] = True
         if self.top_p is not None:
             payload["top_p"] = self.top_p
@@ -217,13 +251,35 @@ class ChatHeroku(BaseChatModel):
                     for line in resp.iter_lines():
                         if not line or line.strip() == b"":
                             continue
-                        # Heroku Inference API streams JSON objects per line
-                        data = httpx.Response(200, content=line).json()
-                        ai_msg = self._api_to_ai_message(data)
-                        chunk = ChatGenerationChunk(message=AIMessageChunk(content=ai_msg.content))
-                        if run_manager:
-                            run_manager.on_llm_new_token(ai_msg.content, chunk=chunk)
-                        yield chunk
+                        
+                        # Convert bytes to string if needed
+                        if isinstance(line, bytes):
+                            line_str = line.decode('utf-8')
+                        else:
+                            line_str = str(line)
+                        
+                        # Skip event lines (they start with "event:")
+                        if line_str.startswith("event:"):
+                            continue
+                        
+                        # Parse data lines (they start with "data:")
+                        if line_str.startswith("data:"):
+                            # Extract JSON data after "data:" prefix
+                            json_str = line_str[5:]  # Remove "data:" prefix
+                            try:
+                                data = json.loads(json_str)
+                                # For streaming, use 'delta' instead of 'message'
+                                choice = data["choices"][0]
+                                delta = choice.get("delta", {})
+                                content = delta.get("content", "")
+                                ai_msg_chunk = AIMessageChunk(content=content)
+                                chunk = ChatGenerationChunk(message=ai_msg_chunk)
+                                if run_manager:
+                                    run_manager.on_llm_new_token(content, chunk=chunk)
+                                yield chunk
+                            except json.JSONDecodeError as e:
+                                # Skip malformed JSON lines
+                                continue
                 break
             except Exception as e:
                 last_exc = e
