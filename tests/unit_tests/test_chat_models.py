@@ -1,9 +1,12 @@
 """Test chat model integration."""
 
 from typing import Type
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
+
 from langchain_heroku.chat_models import MiaChat
+
 
 class TestChatHerokuUnit():
     @property
@@ -206,7 +209,11 @@ def test_chat_heroku_top_p():
 def test_chat_heroku_message_types():
     """Test that all message types are properly mapped to API roles."""
     from langchain_core.messages import (
-        HumanMessage, SystemMessage, AIMessage, ToolMessage, FunctionMessage
+        AIMessage,
+        FunctionMessage,
+        HumanMessage,
+        SystemMessage,
+        ToolMessage,
     )
     
     llm = MiaChat(model="bird-brain-001", temperature=0)
@@ -387,8 +394,10 @@ def test_chat_heroku_extended_thinking_streaming():
 
 if __name__ == "__main__":
     import os
-    from langchain_heroku.chat_models import MiaChat
+
     from langchain_core.messages import HumanMessage
+
+    from langchain_heroku.chat_models import MiaChat
 
     # Example: Set environment variables here for manual testing
     os.environ["INFERENCE_URL"] = os.getenv("INFERENCE_URL", "https://us.inference.heroku.com")

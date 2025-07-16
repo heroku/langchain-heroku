@@ -1,6 +1,7 @@
 """Integration tests for MiaChat production endpoint."""
 
 import os
+
 import pytest
 from langchain_core.messages import HumanMessage, SystemMessage
 

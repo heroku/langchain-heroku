@@ -7,7 +7,7 @@ and shows different ways to run tests with dotenv support.
 """
 
 import os
-import sys
+
 from test_harness import TestHarness
 
 

@@ -1,10 +1,10 @@
 """Heroku chat models."""
 
-from typing import Any, Dict, Iterator, List, Optional
-import os
 import json
-import httpx
+import os
+from typing import Any, Dict, Iterator, List, Optional
 
+import httpx
 from langchain_core.callbacks import (
     CallbackManagerForLLMRun,
 )
@@ -13,13 +13,13 @@ from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
     BaseMessage,
+    FunctionMessage,
     HumanMessage,
     SystemMessage,
     ToolMessage,
-    FunctionMessage,
 )
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
-from pydantic import Field
+
 
 class MiaChat(BaseChatModel):
     """
@@ -284,7 +284,7 @@ class MiaChat(BaseChatModel):
                                 if run_manager:
                                     run_manager.on_llm_new_token(content, chunk=chunk)
                                 yield chunk
-                            except json.JSONDecodeError as e:
+                            except json.JSONDecodeError:
                                 # Skip malformed JSON lines
                                 continue
                 break

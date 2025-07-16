@@ -24,17 +24,17 @@ Example:
     python test_harness.py
 """
 
+import argparse
+import json
 import os
 import sys
 import time
-import json
-import argparse
-import yaml
-import pytest
-from typing import Dict, List, Any, Optional
+import traceback
 from dataclasses import dataclass
 from datetime import datetime
-import traceback
+from typing import Any, Dict, List, Optional
+
+import yaml
 
 # Load dotenv if available
 try:
@@ -45,12 +45,11 @@ except ImportError:
     load_dotenv = None
 
 from langchain_core.messages import (
+    AIMessage,
+    FunctionMessage,
     HumanMessage,
     SystemMessage,
-    AIMessage,
     ToolMessage,
-    FunctionMessage,
-    BaseMessage,
 )
 
 from langchain_heroku.chat_models import MiaChat
