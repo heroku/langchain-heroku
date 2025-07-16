@@ -157,7 +157,7 @@ The test harness supports configuration via YAML files. See `test_config.yaml` f
 model:
   temperature: 0.1
   max_tokens: 256
-  timeout: 60
+  timeout: 30
   streaming: false
   top_p: 0.95
 ```
@@ -397,7 +397,7 @@ INFERENCE_MODEL_ID=your-model-id
 # Optional model parameters
 TEMPERATURE=0.1
 MAX_TOKENS=256
-TIMEOUT=60
+TIMEOUT=30
 TOP_P=0.95
 STREAMING=false
 LOG_LEVEL=INFO

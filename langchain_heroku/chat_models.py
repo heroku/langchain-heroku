@@ -192,7 +192,7 @@ class MiaChat(BaseChatModel):
             payload["top_p"] = self.top_p
         if self.extended_thinking is not None:
             payload["extended_thinking"] = self.extended_thinking
-        timeout = self.timeout or 60
+        timeout = self.timeout or 30
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         max_retries = 2  # Fixed retry count for client-side retries
         for _ in range(max_retries):
@@ -248,7 +248,7 @@ class MiaChat(BaseChatModel):
             payload["top_p"] = self.top_p
         if self.extended_thinking is not None:
             payload["extended_thinking"] = self.extended_thinking
-        timeout = self.timeout or 60
+        timeout = self.timeout or 30
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         max_retries = 2  # Fixed retry count for client-side retries
         for _ in range(max_retries):
