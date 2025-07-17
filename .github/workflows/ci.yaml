@@ -50,12 +50,50 @@ jobs:
       - name: Run tests
         run: poetry run pytest --maxfail=1 --disable-warnings --tb=short
 
-      - name: Run integration tests
-        run: poetry run pytest tests/integration_tests/ --maxfail=1 --disable-warnings --tb=short
-
       - name: Upload pytest results (optional)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pytest-results
-          path: .pytest_cache 
+          path: .pytest_cache
+
+  integration-tests:
+    runs-on: pub-hk-ubuntu-22.04-small
+    environment: INTEGRATION_TESTING
+    needs: build-and-test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Poetry
+        run: |
+          curl -sSL https://install.python-poetry.org | python3 -
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Configure Poetry
+        run: |
+          poetry config virtualenvs.create true
+          poetry config virtualenvs.in-project true
+
+      - name: Cache Poetry virtualenv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
+          restore-keys: |
+            venv-${{ runner.os }}-
+
+      - name: Install dependencies (including test, lint, and typing)
+        run: poetry install --with test,lint,typing
+
+      - name: Run integration tests
+        env:
+          INFERENCE_URL: ${{ vars.INFERENCE_URL }}
+          INFERENCE_MODEL_ID: ${{ vars.INFERENCE_MODEL_ID }}
+          INFERENCE_KEY: ${{ secrets.INFERENCE_KEY }}
+        run: poetry run pytest tests/integration_tests/ --maxfail=1 --disable-warnings --tb=short 
