@@ -2,9 +2,10 @@
 
 import json
 import os
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Generator, List, Optional
 
 import httpx
+import sseclient
 from langchain_core.callbacks import (
     CallbackManagerForLLMRun,
 )
@@ -155,6 +156,64 @@ class MiaChat(BaseChatModel):
             response_metadata=resp,
         )
 
+    def _validate_config(self) -> None:
+        """Validate that all required configuration is present."""
+        if not self._get_inference_url():
+            raise ValueError("INFERENCE_URL must be set via env or init param.")
+        if not self._get_api_key():
+            raise ValueError("INFERENCE_KEY or HEROKU_API_KEY must be set via env or init param.")
+        if not self._get_model():
+            raise ValueError("model or INFERENCE_MODEL_ID must be set via env or init param.")
+
+    def _build_payload(self, messages: List[BaseMessage], stop: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Build the API payload for the chat completion request."""
+        payload: Dict[str, Any] = {
+            "model": self._get_model(),
+            "messages": self._messages_to_api(messages),
+            "allow_ignored_params": True,
+        }
+
+        # Add optional parameters if they are set
+        if self.temperature is not None:
+            payload["temperature"] = self.temperature
+        if self.max_tokens is not None:
+            payload["max_tokens"] = self.max_tokens
+        if stop is not None:
+            payload["stop"] = stop
+        elif self.stop is not None:
+            payload["stop"] = self.stop
+        if self.tools:
+            payload["tools"] = self.tools
+        if self.tool_choice is not None:
+            payload["tool_choice"] = self.tool_choice
+        if self.streaming:
+            payload["stream"] = True
+        if self.top_p is not None:
+            payload["top_p"] = self.top_p
+        if self.extended_thinking is not None:
+            payload["extended_thinking"] = self.extended_thinking
+
+        return payload
+
+    def _make_api_request(self, payload: dict) -> dict:
+        """Make the API request with retry logic."""
+        url = self._get_inference_url()
+        api_key = self._get_api_key()
+        timeout = self.timeout or 30
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+        max_retries = 2
+        for _ in range(max_retries):
+            try:
+                with httpx.Client(timeout=timeout) as client:
+                    resp = client.post(f"{url}/v1/chat/completions", json=payload, headers=headers)
+                    resp.raise_for_status()
+                    return resp.json()
+            except Exception as e:
+                last_exc = e
+        else:
+            raise RuntimeError(f"Heroku Inference API call failed after {max_retries} retries: {last_exc}")
+
     def _generate(
         self,
         messages: List[BaseMessage],
@@ -162,20 +221,21 @@ class MiaChat(BaseChatModel):
         run_manager: Optional[CallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> ChatResult:
-        url = self._get_inference_url()
-        if not url:
-            raise ValueError("INFERENCE_URL must be set via env or init param.")
-        api_key = self._get_api_key()
-        if not api_key:
-            raise ValueError("INFERENCE_KEY or HEROKU_API_KEY must be set via env or init param.")
-        model = self._get_model()
-        if not model:
-            raise ValueError("model or INFERENCE_MODEL_ID must be set via env or init param.")
-        payload = {
-            "model": model,
+        self._validate_config()
+        payload = self._build_payload(messages, stop)
+        data = self._make_api_request(payload)
+        ai_msg = self._api_to_ai_message(data)
+        return ChatResult(generations=[ChatGeneration(message=ai_msg)])
+
+    def _build_streaming_payload(self, messages: List[BaseMessage], stop: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Build the API payload for streaming chat completion requests."""
+        payload: Dict[str, Any] = {
+            "model": self._get_model(),
             "messages": self._messages_to_api(messages),
-            "allow_ignored_params": True,
+            "stream": True,
         }
+
+        # Add optional parameters if they are set
         if self.temperature is not None:
             payload["temperature"] = self.temperature
         if self.max_tokens is not None:
@@ -188,28 +248,53 @@ class MiaChat(BaseChatModel):
             payload["tools"] = self.tools
         if self.tool_choice is not None:
             payload["tool_choice"] = self.tool_choice
-        if self.streaming:
-            payload["stream"] = True
         if self.top_p is not None:
             payload["top_p"] = self.top_p
         if self.extended_thinking is not None:
             payload["extended_thinking"] = self.extended_thinking
+
+        return payload
+
+    def _make_streaming_request(self, payload: Dict[str, Any]) -> sseclient.SSEClient:
+        """Make the streaming API request with retry logic."""
+        url = self._get_inference_url()
+        api_key = self._get_api_key()
         timeout = self.timeout or 30
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-        max_retries = 2  # Fixed retry count for client-side retries
+
+        max_retries = 2
         for _ in range(max_retries):
             try:
                 with httpx.Client(timeout=timeout) as client:
-                    resp = client.post(f"{url}/v1/chat/completions", json=payload, headers=headers)
-                    resp.raise_for_status()
-                    data = resp.json()
-                    break
+                    response = client.post(f"{url}/v1/chat/completions", json=payload, headers=headers)
+                    response.raise_for_status()
+
+                    # Convert httpx response to work with sseclient
+                    def response_generator() -> Generator[bytes, None, None]:
+                        for chunk in response.iter_bytes():
+                            yield chunk
+
+                    return sseclient.SSEClient(response_generator())
             except Exception as e:
                 last_exc = e
         else:
-            raise RuntimeError(f"Heroku Inference API call failed after {max_retries} retries: {last_exc}")
-        ai_msg = self._api_to_ai_message(data)
-        return ChatResult(generations=[ChatGeneration(message=ai_msg)])
+            raise RuntimeError(f"Heroku Inference API stream call failed after {max_retries} retries: {last_exc}")
+
+    def _parse_sse_event(self, event: sseclient.Event) -> Optional[str]:
+        """Parse a single SSE event and extract content."""
+        try:
+            # Handle the special "[DONE]" message
+            if event.data == "[DONE]":
+                return None
+
+            data = json.loads(event.data)
+            # For streaming, use 'delta' instead of 'message'
+            choice = data["choices"][0]
+            delta = choice.get("delta", {})
+            return delta.get("content", "")
+        except (json.JSONDecodeError, KeyError, IndexError):
+            # Skip malformed JSON lines or missing data
+            return None
 
     def _stream(
         self,
@@ -217,80 +302,19 @@ class MiaChat(BaseChatModel):
         stop: Optional[List[str]] = None,
         run_manager: Optional[CallbackManagerForLLMRun] = None,
         **kwargs: Any,
-    ) -> Iterator[ChatGenerationChunk]:
-        url = self._get_inference_url()
-        if not url:
-            raise ValueError("INFERENCE_URL must be set via env or init param.")
-        api_key = self._get_api_key()
-        if not api_key:
-            raise ValueError("INFERENCE_KEY or HEROKU_API_KEY must be set via env or init param.")
-        model = self._get_model()
-        if not model:
-            raise ValueError("model or INFERENCE_MODEL_ID must be set via env or init param.")
-        payload = {
-            "model": model,
-            "messages": self._messages_to_api(messages),
-            "stream": True,
-        }
-        if self.temperature is not None:
-            payload["temperature"] = self.temperature
-        if self.max_tokens is not None:
-            payload["max_tokens"] = self.max_tokens
-        if stop is not None:
-            payload["stop"] = stop
-        elif self.stop is not None:
-            payload["stop"] = self.stop
-        if self.tools:
-            payload["tools"] = self.tools
-        if self.tool_choice is not None:
-            payload["tool_choice"] = self.tool_choice
-        if self.streaming:
-            payload["stream"] = True
-        if self.top_p is not None:
-            payload["top_p"] = self.top_p
-        if self.extended_thinking is not None:
-            payload["extended_thinking"] = self.extended_thinking
-        timeout = self.timeout or 30
-        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-        max_retries = 2  # Fixed retry count for client-side retries
-        for _ in range(max_retries):
-            try:
-                with httpx.stream("POST", f"{url}/v1/chat/completions", json=payload, headers=headers, timeout=timeout) as resp:
-                    resp.raise_for_status()
-                    for line in resp.iter_lines():
-                        if not line or line.strip() == b"":
-                            continue
+    ) -> Generator[ChatGenerationChunk, None, None]:
+        self._validate_config()
+        payload = self._build_streaming_payload(messages, stop)
 
-                        # Convert bytes to string if needed
-                        if isinstance(line, bytes):
-                            line_str = line.decode("utf-8")
-                        else:
-                            line_str = str(line)
-
-                        # Skip event lines (they start with "event:")
-                        if line_str.startswith("event:"):
-                            continue
-
-                        # Parse data lines (they start with "data:")
-                        if line_str.startswith("data:"):
-                            # Extract JSON data after "data:" prefix
-                            json_str = line_str[5:]  # Remove "data:" prefix
-                            try:
-                                data = json.loads(json_str)
-                                # For streaming, use 'delta' instead of 'message'
-                                choice = data["choices"][0]
-                                delta = choice.get("delta", {})
-                                content = delta.get("content", "")
-                                ai_msg_chunk = AIMessageChunk(content=content)
-                                chunk = ChatGenerationChunk(message=ai_msg_chunk)
-                                if run_manager:
-                                    run_manager.on_llm_new_token(content, chunk=chunk)
-                                yield chunk
-                            except json.JSONDecodeError:
-                                # Skip malformed JSON lines
-                                continue
-                break
-            except Exception as e:
-                last_exc = e
-        else:
-            raise RuntimeError(f"Heroku Inference API stream call failed after {max_retries} retries: {last_exc}")
+        client = self._make_streaming_request(payload)
+        try:
+            for event in client.events():
+                content = self._parse_sse_event(event)
+                if content is not None:
+                    ai_msg_chunk = AIMessageChunk(content=content)
+                    chunk = ChatGenerationChunk(message=ai_msg_chunk)
+                    if run_manager:
+                        run_manager.on_llm_new_token(content, chunk=chunk)
+                    yield chunk
+        finally:
+            client.close()

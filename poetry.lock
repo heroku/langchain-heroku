@@ -1630,6 +1630,18 @@ files = [
 ]
 
 [[package]]
+name = "sseclient-py"
+version = "1.8.0"
+description = "SSE client for Python"
+optional = false
+python-versions = "*"
+groups = ["main"]
+files = [
+    {file = "sseclient-py-1.8.0.tar.gz", hash = "sha256:c547c5c1a7633230a38dc599a21a2dc638f9b5c297286b48b46b935c71fac3e8"},
+    {file = "sseclient_py-1.8.0-py2.py3-none-any.whl", hash = "sha256:4ecca6dc0b9f963f8384e9d7fd529bf93dd7d708144c4fb5da0e0a1a926fee83"},
+]
+
+[[package]]
 name = "syrupy"
 version = "4.9.1"
 description = "Pytest Snapshot Test Utility"
@@ -2179,4 +2191,4 @@ cffi = ["cffi (>=1.11)"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.9,<4.0"
-content-hash = "ae271bd435a96fd73e58378ff10c15aab3762d1bba066bde06fe80f7a5cf85cc"
+content-hash = "cf84a4df9742ae54bb649d7d5eeb2478a2f2466de23613b52610ebef57f88e97"

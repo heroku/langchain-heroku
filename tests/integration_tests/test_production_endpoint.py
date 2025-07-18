@@ -8,7 +8,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 # Load dotenv if available
 try:
-    from dotenv import load_dotenv
+    from dotenv import load_dotenv  # type: ignore[import-not-found]
 
     DOTENV_AVAILABLE = True
 except ImportError:

@@ -1,9 +1,10 @@
 """Test chat model integration."""
 
-from typing import Type
+from typing import List, Type
 from unittest.mock import MagicMock, patch
 
 import pytest
+from langchain_core.messages import BaseMessage, HumanMessage
 
 from langchain_heroku.chat_models import MiaChat
 
@@ -47,8 +48,8 @@ def test_chat_heroku_basic_usage() -> None:
             mock_client_class.return_value.__enter__.return_value = mock_client
 
             llm = MiaChat(model="bird-brain-001", temperature=0)
-            messages = [
-                type("Msg", (), {"role": "user", "content": "Say hello"})(),
+            messages: List[BaseMessage] = [
+                HumanMessage(content="Say hello"),
             ]
             result = llm._generate(messages)
             ai_msg = result.generations[0].message  # type: ignore[attr-defined]
@@ -86,8 +87,6 @@ def test_chat_heroku_invoke_with_string() -> None:
 
 
 def test_chat_heroku_invoke_with_messages() -> None:
-    from langchain_core.messages import HumanMessage
-
     mock_response = {
         "id": "chatcmpl-123",
         "object": "chat.completion",
@@ -372,26 +371,13 @@ def test_chat_heroku_extended_thinking_streaming() -> None:
     """Test that the extended_thinking parameter is properly handled in streaming mode."""
     extended_thinking_config = {"enabled": True, "budget_tokens": 1024, "include_reasoning": True}
     with patch.dict("os.environ", {"INFERENCE_URL": "https://dummy.url", "INFERENCE_KEY": "dummy-key"}):
-        with patch("httpx.stream") as mock_stream:
-            # Mock the streaming response
-            mock_response = MagicMock()
-            mock_response.raise_for_status.return_value = None
-            mock_response.iter_lines.return_value = [
-                b'data: {"choices": [{"delta": {"content": "Hello"}}]}',
-                b'data: {"choices": [{"delta": {"content": " world"}}]}',
-                b"data: [DONE]",
-            ]
-            mock_stream.return_value.__enter__.return_value = mock_response
+        llm = MiaChat(model="bird-brain-001", temperature=0, extended_thinking=extended_thinking_config, streaming=True)
+        messages: List[BaseMessage] = [HumanMessage(content="Say hello")]
 
-            llm = MiaChat(model="bird-brain-001", temperature=0, extended_thinking=extended_thinking_config, streaming=True)
-            messages = [type("Msg", (), {"role": "user", "content": "Say hello"})()]
-
-            # Trigger streaming to ensure extended_thinking is included in the payload
-            list(llm._stream(messages))
-
-            # Check that extended_thinking was included in the payload
-            args, kwargs = mock_stream.call_args
-            assert kwargs["json"]["extended_thinking"] == extended_thinking_config
+        # Test that the streaming payload includes extended_thinking
+        payload = llm._build_streaming_payload(messages)
+        assert payload["extended_thinking"] == extended_thinking_config
+        assert payload["stream"] is True
 
 
 # Optionally, add more tests for error handling, streaming, etc.
