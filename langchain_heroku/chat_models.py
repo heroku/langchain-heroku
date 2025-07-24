@@ -22,7 +22,7 @@ from langchain_core.messages import (
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 
 
-class MiaChat(BaseChatModel):
+class ChatHeroku(BaseChatModel):
     """
     Heroku chat model integration using the Inference API v1 /v1/chat/completions endpoint.
 
@@ -32,10 +32,10 @@ class MiaChat(BaseChatModel):
         export INFERENCE_MODEL_ID="your-model-id"
 
     Basic usage:
-        from langchain_heroku.chat_models import MiaChat
+        from langchain_heroku.chat_models import ChatHeroku
         from langchain_core.messages import HumanMessage
 
-        chat = MiaChat()
+        chat = ChatHeroku()
         result = chat([HumanMessage(content="Hello!")])
         print(result.generations[0].message.content)
 
@@ -52,11 +52,11 @@ class MiaChat(BaseChatModel):
             FunctionMessage(content="Temperature: 75°F", name="get_weather")
         ]
 
-        chat = MiaChat()
+        chat = ChatHeroku()
         result = chat(messages)
 
     Usage with explicit parameters:
-        chat = MiaChat(
+        chat = ChatHeroku(
             model="your-model-id",
             api_key="your-heroku-inference-api-key",
             inference_url="https://your-inference-api-url",
@@ -73,7 +73,7 @@ class MiaChat(BaseChatModel):
         print(result.generations[0].message.content)
 
     Streaming usage:
-        chat = MiaChat(streaming=True)
+        chat = ChatHeroku(streaming=True)
         for chunk in chat.stream([HumanMessage(content="Hello!")]):
             print(chunk.message.content, end="")
 
