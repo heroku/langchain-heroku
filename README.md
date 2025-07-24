@@ -127,13 +127,13 @@ poetry run pytest -v
 
 ## Chat Models
 
-`MiaChat` class exposes chat models from Heroku using the Inference API.
+`ChatHeroku` class exposes chat models from Heroku using the Inference API.
 
 ```python
-from langchain_heroku import MiaChat
+from langchain_heroku import ChatHeroku
 from langchain_core.messages import HumanMessage
 
-chat = MiaChat()
+chat = ChatHeroku()
 result = chat.invoke([HumanMessage(content="Sing a ballad of LangChain.")])
 print(result.content)
 ```
@@ -149,7 +149,7 @@ messages = [
     HumanMessage(content="What's the weather like?")
 ]
 
-chat = MiaChat(temperature=0.7, max_tokens=256)
+chat = ChatHeroku(temperature=0.7, max_tokens=256)
 result = chat.invoke(messages)
 print(result.content)
 ```
@@ -157,7 +157,7 @@ print(result.content)
 ### Streaming
 
 ```python
-chat = MiaChat(streaming=True)
+chat = ChatHeroku(streaming=True)
 for chunk in chat.stream([HumanMessage(content="Tell me a story.")]):
     print(chunk.content, end="")
 ```

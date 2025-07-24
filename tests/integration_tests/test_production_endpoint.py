@@ -1,4 +1,4 @@
-"""Integration tests for MiaChat production endpoint."""
+"""Integration tests for ChatHeroku production endpoint."""
 
 import os
 from typing import Any
@@ -20,11 +20,11 @@ except ImportError:
 
     load_dotenv = _load_dotenv_stub
 
-from langchain_heroku.chat_models import MiaChat
+from langchain_heroku.chat_models import ChatHeroku
 
 
 class TestProductionEndpoint:
-    """Test MiaChat against production endpoint."""
+    """Test ChatHeroku against production endpoint."""
 
     @pytest.fixture(autouse=True)
     def setup(self) -> None:
@@ -45,7 +45,7 @@ class TestProductionEndpoint:
 
     def test_production_basic_conversation(self) -> None:
         """Test basic conversation against production endpoint."""
-        chat = MiaChat()
+        chat = ChatHeroku()
         messages = [HumanMessage(content="Hello! How are you today?")]
 
         result = chat.invoke(messages)
@@ -56,7 +56,7 @@ class TestProductionEndpoint:
 
     def test_production_system_message(self) -> None:
         """Test system message against production endpoint."""
-        chat = MiaChat()
+        chat = ChatHeroku()
         messages = [SystemMessage(content="You are a helpful assistant."), HumanMessage(content="What is 2 + 2?")]
 
         result = chat.invoke(messages)
@@ -69,7 +69,7 @@ class TestProductionEndpoint:
 
     def test_production_string_input(self) -> None:
         """Test string input against production endpoint."""
-        chat = MiaChat()
+        chat = ChatHeroku()
 
         result = chat.invoke("Tell me a short joke.")
 
@@ -79,11 +79,11 @@ class TestProductionEndpoint:
     def test_production_temperature_variation(self) -> None:
         """Test temperature parameter against production endpoint."""
         # Test with low temperature
-        low_temp_chat = MiaChat(temperature=0.0)
+        low_temp_chat = ChatHeroku(temperature=0.0)
         result_low = low_temp_chat.invoke("What is the capital of France?")
 
         # Test with high temperature
-        high_temp_chat = MiaChat(temperature=0.9)
+        high_temp_chat = ChatHeroku(temperature=0.9)
         result_high = high_temp_chat.invoke("What is the capital of France?")
 
         assert result_low.content is not None
@@ -96,7 +96,7 @@ class TestProductionEndpoint:
 
     def test_production_max_tokens(self) -> None:
         """Test max_tokens parameter against production endpoint."""
-        chat = MiaChat(max_tokens=10)
+        chat = ChatHeroku(max_tokens=10)
 
         result = chat.invoke("Write a detailed explanation of quantum physics.")
 
@@ -107,7 +107,7 @@ class TestProductionEndpoint:
 
     def test_production_streaming(self) -> None:
         """Test streaming against production endpoint."""
-        chat = MiaChat(streaming=True)
+        chat = ChatHeroku(streaming=True)
         messages = [HumanMessage(content="Write a short story about a cat.")]
 
         full_response = ""
@@ -124,7 +124,7 @@ class TestProductionEndpoint:
 
     def test_production_error_handling(self) -> None:
         """Test error handling against production endpoint."""
-        chat = MiaChat()
+        chat = ChatHeroku()
 
         # Test with invalid input
         with pytest.raises(ValueError):
@@ -132,7 +132,7 @@ class TestProductionEndpoint:
 
     def test_production_usage_metadata(self) -> None:
         """Test that usage metadata is properly returned."""
-        chat = MiaChat()
+        chat = ChatHeroku()
         messages = [HumanMessage(content="Hello")]
 
         result = chat.invoke(messages)
@@ -152,7 +152,7 @@ class TestProductionEndpoint:
 
     def test_production_response_metadata(self) -> None:
         """Test that response metadata is properly returned."""
-        chat = MiaChat()
+        chat = ChatHeroku()
         messages = [HumanMessage(content="Hello")]
 
         result = chat.invoke(messages)
@@ -166,7 +166,7 @@ class TestProductionEndpoint:
     def test_production_timeout_handling(self) -> None:
         """Test timeout handling against production endpoint."""
         # Test with a very short timeout
-        chat = MiaChat(timeout=1)
+        chat = ChatHeroku(timeout=1)
         messages = [HumanMessage(content="Write a very long story.")]
 
         # This might timeout, which is expected behavior
@@ -200,7 +200,7 @@ class TestProductionEndpoint:
             pytest.skip("Extended thinking is only supported on Claude Sonnet models")
 
         extended_thinking_config = {"enabled": True, "budget_tokens": 1024, "include_reasoning": True}
-        chat = MiaChat(extended_thinking=extended_thinking_config)
+        chat = ChatHeroku(extended_thinking=extended_thinking_config)
         messages = [HumanMessage(content="Solve this step by step: What is 15% of 200?")]
 
         result = chat.invoke(messages)

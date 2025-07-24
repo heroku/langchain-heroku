@@ -6,13 +6,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 from langchain_core.messages import BaseMessage, HumanMessage
 
-from langchain_heroku.chat_models import MiaChat
+from langchain_heroku.chat_models import ChatHeroku
 
 
 class TestChatHerokuUnit:
     @property
-    def chat_model_class(self) -> Type[MiaChat]:
-        return MiaChat
+    def chat_model_class(self) -> Type[ChatHeroku]:
+        return ChatHeroku
 
     @property
     def chat_model_params(self) -> dict:
@@ -47,7 +47,7 @@ def test_chat_heroku_basic_usage() -> None:
             mock_client.post.return_value.raise_for_status.return_value = None
             mock_client_class.return_value.__enter__.return_value = mock_client
 
-            llm = MiaChat(model="bird-brain-001", temperature=0)
+            llm = ChatHeroku(model="bird-brain-001", temperature=0)
             messages: List[BaseMessage] = [
                 HumanMessage(content="Say hello"),
             ]
@@ -79,7 +79,7 @@ def test_chat_heroku_invoke_with_string() -> None:
             mock_client.post.return_value.raise_for_status.return_value = None
             mock_client_class.return_value.__enter__.return_value = mock_client
 
-            llm = MiaChat(model="bird-brain-001", temperature=0)
+            llm = ChatHeroku(model="bird-brain-001", temperature=0)
             result = llm.invoke("Say hello")
             ai_msg = result  # type: ignore[attr-defined]
             assert ai_msg.content == "Hello! How can I help you?"
@@ -108,7 +108,7 @@ def test_chat_heroku_invoke_with_messages() -> None:
             mock_client.post.return_value.raise_for_status.return_value = None
             mock_client_class.return_value.__enter__.return_value = mock_client
 
-            llm = MiaChat(model="bird-brain-001", temperature=0)
+            llm = ChatHeroku(model="bird-brain-001", temperature=0)
             messages = [HumanMessage(content="Say hello")]
             result = llm.invoke(messages)
             ai_msg = result  # type: ignore[attr-defined]
@@ -117,7 +117,7 @@ def test_chat_heroku_invoke_with_messages() -> None:
 
 
 def test_chat_heroku_invoke_invalid_input() -> None:
-    llm = MiaChat(model="bird-brain-001", temperature=0)
+    llm = ChatHeroku(model="bird-brain-001", temperature=0)
     with pytest.raises(ValueError):
         llm.invoke(12345)  # type: ignore[arg-type]  # Not a string or list of BaseMessage
 
@@ -144,7 +144,7 @@ def test_chat_heroku_tool_choice_string() -> None:
             mock_client.post.return_value.raise_for_status.return_value = None
             mock_client_class.return_value.__enter__.return_value = mock_client
 
-            llm = MiaChat(model="bird-brain-001", temperature=0, tool_choice="auto")
+            llm = ChatHeroku(model="bird-brain-001", temperature=0, tool_choice="auto")
             llm.invoke("Test tool choice")
             # Check that tool_choice was included in the payload
             args, kwargs = mock_client.post.call_args
@@ -174,7 +174,7 @@ def test_chat_heroku_tool_choice_dict() -> None:
             mock_client.post.return_value.raise_for_status.return_value = None
             mock_client_class.return_value.__enter__.return_value = mock_client
 
-            llm = MiaChat(model="bird-brain-001", temperature=0, tool_choice=tool_choice_dict)
+            llm = ChatHeroku(model="bird-brain-001", temperature=0, tool_choice=tool_choice_dict)
             llm.invoke("Test tool choice dict")
             # Check that tool_choice dict was included in the payload
             args, kwargs = mock_client.post.call_args
@@ -203,7 +203,7 @@ def test_chat_heroku_top_p() -> None:
             mock_client.post.return_value.raise_for_status.return_value = None
             mock_client_class.return_value.__enter__.return_value = mock_client
 
-            llm = MiaChat(model="bird-brain-001", temperature=0, top_p=0.95)
+            llm = ChatHeroku(model="bird-brain-001", temperature=0, top_p=0.95)
             llm.invoke("Test top_p")
             args, kwargs = mock_client.post.call_args
             assert kwargs["json"]["top_p"] == 0.95
@@ -219,7 +219,7 @@ def test_chat_heroku_message_types() -> None:
         ToolMessage,
     )
 
-    llm = MiaChat(model="bird-brain-001", temperature=0)
+    llm = ChatHeroku(model="bird-brain-001", temperature=0)
 
     # Test all message types
     messages = [
@@ -272,7 +272,7 @@ def test_chat_heroku_streaming_parameter() -> None:
             mock_client.post.return_value.raise_for_status.return_value = None
             mock_client_class.return_value.__enter__.return_value = mock_client
 
-            llm = MiaChat(model="bird-brain-001", temperature=0, streaming=True)
+            llm = ChatHeroku(model="bird-brain-001", temperature=0, streaming=True)
             llm.invoke("Test streaming")
             args, kwargs = mock_client.post.call_args
             assert kwargs["json"]["stream"]
@@ -302,7 +302,7 @@ def test_chat_heroku_tools_parameter() -> None:
             mock_client.post.return_value.raise_for_status.return_value = None
             mock_client_class.return_value.__enter__.return_value = mock_client
 
-            llm = MiaChat(model="bird-brain-001", temperature=0, tools=tools)
+            llm = ChatHeroku(model="bird-brain-001", temperature=0, tools=tools)
             llm.invoke("Test tools")
             args, kwargs = mock_client.post.call_args
             assert kwargs["json"]["tools"] == tools
@@ -331,7 +331,7 @@ def test_chat_heroku_allow_ignored_params() -> None:
             mock_client.post.return_value.raise_for_status.return_value = None
             mock_client_class.return_value.__enter__.return_value = mock_client
 
-            llm = MiaChat(model="bird-brain-001", temperature=0)
+            llm = ChatHeroku(model="bird-brain-001", temperature=0)
             llm.invoke("Test allow_ignored_params")
             args, kwargs = mock_client.post.call_args
             assert kwargs["json"]["allow_ignored_params"]
@@ -361,7 +361,7 @@ def test_chat_heroku_extended_thinking() -> None:
             mock_client.post.return_value.raise_for_status.return_value = None
             mock_client_class.return_value.__enter__.return_value = mock_client
 
-            llm = MiaChat(model="bird-brain-001", temperature=0, extended_thinking=extended_thinking_config)
+            llm = ChatHeroku(model="bird-brain-001", temperature=0, extended_thinking=extended_thinking_config)
             llm.invoke("Test extended thinking")
             args, kwargs = mock_client.post.call_args
             assert kwargs["json"]["extended_thinking"] == extended_thinking_config
@@ -371,7 +371,7 @@ def test_chat_heroku_extended_thinking_streaming() -> None:
     """Test that the extended_thinking parameter is properly handled in streaming mode."""
     extended_thinking_config = {"enabled": True, "budget_tokens": 1024, "include_reasoning": True}
     with patch.dict("os.environ", {"INFERENCE_URL": "https://dummy.url", "INFERENCE_KEY": "dummy-key"}):
-        llm = MiaChat(model="bird-brain-001", temperature=0, extended_thinking=extended_thinking_config, streaming=True)
+        llm = ChatHeroku(model="bird-brain-001", temperature=0, extended_thinking=extended_thinking_config, streaming=True)
         messages: List[BaseMessage] = [HumanMessage(content="Say hello")]
 
         # Test that the streaming payload includes extended_thinking
@@ -387,14 +387,14 @@ if __name__ == "__main__":
 
     from langchain_core.messages import HumanMessage
 
-    from langchain_heroku.chat_models import MiaChat
+    from langchain_heroku.chat_models import ChatHeroku
 
     # Example: Set environment variables here for manual testing
     os.environ["INFERENCE_URL"] = os.getenv("INFERENCE_URL", "https://us.inference.heroku.com")
     os.environ["INFERENCE_KEY"] = os.getenv("INFERENCE_KEY", "inf-asdfghj-1234-567-8910-aabbccddee")
     os.environ["INFERENCE_MODEL_ID"] = os.getenv("INFERENCE_MODEL_ID", "claude-3-7-sonnet")
 
-    chat = MiaChat()
+    chat = ChatHeroku()
     messages = [HumanMessage(content="Hello, world!")]
     try:
         result = chat.invoke(messages)
