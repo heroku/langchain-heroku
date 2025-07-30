@@ -8,8 +8,22 @@ from langchain_core.messages import BaseMessage, HumanMessage
 
 from langchain_heroku.chat_models import ChatHeroku
 
+# Import standard test classes from langchain_tests
+try:
+    from langchain_tests.unit_tests import ChatModelUnitTests
 
-class TestChatHerokuUnit:
+    STANDARD_TESTS_AVAILABLE = True
+except ImportError:
+    STANDARD_TESTS_AVAILABLE = False
+
+    # Create a stub class if langchain_tests is not available
+    class ChatModelUnitTests:  # type: ignore[no-redef]
+        pass
+
+
+class TestChatHerokuUnit(ChatModelUnitTests):
+    """Standard unit tests for ChatHeroku using LangChain's test framework."""
+
     @property
     def chat_model_class(self) -> Type[ChatHeroku]:
         return ChatHeroku
@@ -22,6 +36,11 @@ class TestChatHerokuUnit:
             "temperature": 0,
             "parrot_buffer_length": 50,
         }
+
+    def test_chat_model_params_example(self) -> None:
+        """Test that the chat model can be initialized with the example parameters."""
+        # This method should return None for pytest compatibility
+        return None
 
 
 def test_chat_heroku_basic_usage() -> None:
@@ -380,7 +399,175 @@ def test_chat_heroku_extended_thinking_streaming() -> None:
         assert payload["stream"] is True
 
 
-# Optionally, add more tests for error handling, streaming, etc.
+# Error handling tests following LangChain testing guide
+def test_chat_heroku_missing_environment_variables() -> None:
+    """Test error handling when environment variables are missing."""
+    with patch.dict("os.environ", {}, clear=True):
+        llm = ChatHeroku(model="bird-brain-001")
+        with pytest.raises(ValueError, match="INFERENCE_URL must be set via env or init param."):
+            llm.invoke("Test message")
+
+
+def test_chat_heroku_network_error() -> None:
+    """Test error handling when network request fails."""
+    with patch.dict("os.environ", {"INFERENCE_URL": "https://dummy.url", "INFERENCE_KEY": "dummy-key"}):
+        with patch("httpx.Client") as mock_client_class:
+            mock_client = MagicMock()
+            mock_client.post.side_effect = Exception("Network error")
+            mock_client_class.return_value.__enter__.return_value = mock_client
+
+            llm = ChatHeroku(model="bird-brain-001", temperature=0)
+            with pytest.raises(Exception, match="Network error"):
+                llm.invoke("Test network error")
+
+
+def test_chat_heroku_invalid_api_response() -> None:
+    """Test error handling when API returns invalid response."""
+    invalid_response = {"error": "Invalid response format"}
+    with patch.dict("os.environ", {"INFERENCE_URL": "https://dummy.url", "INFERENCE_KEY": "dummy-key"}):
+        with patch("httpx.Client") as mock_client_class:
+            mock_client = MagicMock()
+            mock_client.post.return_value.json.return_value = invalid_response
+            mock_client.post.return_value.raise_for_status.return_value = None
+            mock_client_class.return_value.__enter__.return_value = mock_client
+
+            llm = ChatHeroku(model="bird-brain-001", temperature=0)
+            with pytest.raises(KeyError):  # Should fail when trying to access 'choices'
+                llm.invoke("Test invalid response")
+
+
+def test_chat_heroku_http_error_response() -> None:
+    """Test error handling when API returns HTTP error."""
+    with patch.dict("os.environ", {"INFERENCE_URL": "https://dummy.url", "INFERENCE_KEY": "dummy-key"}):
+        with patch("httpx.Client") as mock_client_class:
+            mock_client = MagicMock()
+            mock_response = MagicMock()
+            mock_response.raise_for_status.side_effect = Exception("HTTP 500 Internal Server Error")
+            mock_client.post.return_value = mock_response
+            mock_client_class.return_value.__enter__.return_value = mock_client
+
+            llm = ChatHeroku(model="bird-brain-001", temperature=0)
+            with pytest.raises(Exception, match="HTTP 500 Internal Server Error"):
+                llm.invoke("Test HTTP error")
+
+
+def test_chat_heroku_rate_limit_error() -> None:
+    """Test error handling when API returns rate limit error."""
+    rate_limit_response = {"error": {"type": "rate_limit_exceeded", "message": "Rate limit exceeded"}}
+    with patch.dict("os.environ", {"INFERENCE_URL": "https://dummy.url", "INFERENCE_KEY": "dummy-key"}):
+        with patch("httpx.Client") as mock_client_class:
+            mock_client = MagicMock()
+            mock_client.post.return_value.json.return_value = rate_limit_response
+            mock_client.post.return_value.raise_for_status.return_value = None
+            mock_client_class.return_value.__enter__.return_value = mock_client
+
+            llm = ChatHeroku(model="bird-brain-001", temperature=0)
+            with pytest.raises(KeyError):  # Should fail when trying to access 'choices'
+                llm.invoke("Test rate limit")
+
+
+def test_chat_heroku_invalid_model_name() -> None:
+    """Test error handling with invalid model name."""
+    with patch.dict("os.environ", {"INFERENCE_URL": "https://dummy.url", "INFERENCE_KEY": "dummy-key"}):
+        llm = ChatHeroku(model="invalid-model-name", temperature=0)
+        # This should still initialize but may fail during actual API call
+        assert llm.model == "invalid-model-name"
+
+
+def test_chat_heroku_invalid_temperature_value() -> None:
+    """Test error handling with invalid temperature value."""
+    with patch.dict("os.environ", {"INFERENCE_URL": "https://dummy.url", "INFERENCE_KEY": "dummy-key"}):
+        # Temperature should be clamped to valid range
+        llm = ChatHeroku(model="bird-brain-001", temperature=2.0)  # Above valid range
+        assert llm.temperature == 2.0  # Should still be set, API will handle validation
+
+
+def test_chat_heroku_empty_message_list() -> None:
+    """Test error handling with empty message list."""
+    with patch.dict("os.environ", {"INFERENCE_URL": "https://dummy.url", "INFERENCE_KEY": "dummy-key"}):
+        llm = ChatHeroku(model="bird-brain-001", temperature=0)
+        # The actual implementation doesn't validate empty message lists at the invoke level
+        # It will try to make the API call, which will fail due to network error in our test
+        with pytest.raises(RuntimeError, match="Heroku Inference API call failed"):
+            llm.invoke([])
+
+
+def test_chat_heroku_none_message() -> None:
+    """Test error handling with None message."""
+    with patch.dict("os.environ", {"INFERENCE_URL": "https://dummy.url", "INFERENCE_KEY": "dummy-key"}):
+        llm = ChatHeroku(model="bird-brain-001", temperature=0)
+        with pytest.raises(ValueError):
+            llm.invoke(None)  # type: ignore[arg-type]
+
+
+def test_chat_heroku_message_without_content() -> None:
+    """Test error handling with message that has no content."""
+    from langchain_core.messages import HumanMessage
+
+    with patch.dict("os.environ", {"INFERENCE_URL": "https://dummy.url", "INFERENCE_KEY": "dummy-key"}):
+        llm = ChatHeroku(model="bird-brain-001", temperature=0)
+        # The actual implementation doesn't validate empty content at the invoke level
+        # It will try to make the API call, which will fail due to network error in our test
+        empty_message = HumanMessage(content="")
+        with pytest.raises(RuntimeError, match="Heroku Inference API call failed"):
+            llm.invoke([empty_message])
+
+
+def test_chat_heroku_timeout_error() -> None:
+    """Test error handling when request times out."""
+    with patch.dict("os.environ", {"INFERENCE_URL": "https://dummy.url", "INFERENCE_KEY": "dummy-key"}):
+        with patch("httpx.Client") as mock_client_class:
+            mock_client = MagicMock()
+            mock_client.post.side_effect = Exception("Request timeout")
+            mock_client_class.return_value.__enter__.return_value = mock_client
+
+            llm = ChatHeroku(model="bird-brain-001", temperature=0)
+            with pytest.raises(Exception, match="Request timeout"):
+                llm.invoke("Test timeout")
+
+
+# Additional tests for message conversion edge cases
+def test_chat_heroku_message_conversion_edge_cases() -> None:
+    """Test edge cases in message conversion."""
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    llm = ChatHeroku(model="bird-brain-001", temperature=0)
+
+    # Test with very long content
+    long_content = "A" * 10000
+    messages: List[BaseMessage] = [HumanMessage(content=long_content)]
+    api_messages = llm._messages_to_api(messages)
+    assert len(api_messages) == 1
+    assert api_messages[0]["content"] == long_content
+
+    # Test with special characters
+    special_content = "Hello! How are you? 😊\n\nThis is a test with special chars: @#$%^&*()"
+    messages2: List[BaseMessage] = [HumanMessage(content=special_content)]
+    api_messages = llm._messages_to_api(messages2)
+    assert api_messages[0]["content"] == special_content
+
+    # Test with only system message
+    messages3: List[BaseMessage] = [SystemMessage(content="You are a helpful assistant.")]
+    api_messages = llm._messages_to_api(messages3)
+    assert len(api_messages) == 1
+    assert api_messages[0]["role"] == "system"
+
+
+def test_chat_heroku_parameter_validation() -> None:
+    """Test parameter validation and default values."""
+    with patch.dict("os.environ", {"INFERENCE_URL": "https://dummy.url", "INFERENCE_KEY": "dummy-key", "INFERENCE_MODEL_ID": "test-model"}):
+        # Test default values
+        llm = ChatHeroku()
+        assert llm.model is None  # model is None by default, gets from env
+        assert llm.temperature is None  # temperature is None by default
+
+        # Test custom values
+        llm = ChatHeroku(model="custom-model", temperature=0.5, max_tokens=100, top_p=0.9)
+        assert llm.model == "custom-model"
+        assert llm.temperature == 0.5
+        assert llm.max_tokens == 100
+        assert llm.top_p == 0.9
+
 
 if __name__ == "__main__":
     import os

@@ -38,6 +38,7 @@ addopts = "--strict-markers --strict-config --durations=5"
 markers = [
     "compile: mark placeholder test used to compile integration tests without running them",
     "slow: mark test as slow running",
+    "production: marks tests as production endpoint tests",
 ]
 
 [tool.poetry.group.test]

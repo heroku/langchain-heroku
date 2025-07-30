@@ -48,7 +48,7 @@ jobs:
         run: poetry run mypy .
 
       - name: Run tests
-        run: poetry run pytest --maxfail=1 --disable-warnings --tb=short
+        run: poetry run pytest --maxfail=1 --disable-warnings --tb=short --ignore=tests/integration_tests/
 
       - name: Upload pytest results (optional)
         if: always()

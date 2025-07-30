@@ -150,10 +150,14 @@ class ChatHeroku(BaseChatModel):
         # Store usage metadata in additional_kwargs since AIMessage doesn't have usage_metadata parameter
         if usage_metadata:
             additional_kwargs["usage_metadata"] = usage_metadata
+        # Add model_name to response_metadata for usage tracking
+        response_metadata = resp.copy()
+        response_metadata["model_name"] = resp.get("model", self._get_model())
         return AIMessage(
             content=content,
             additional_kwargs=additional_kwargs,
-            response_metadata=resp,
+            response_metadata=response_metadata,
+            usage_metadata=usage_metadata if usage_metadata else None,
         )
 
     def _validate_config(self) -> None:
@@ -280,8 +284,8 @@ class ChatHeroku(BaseChatModel):
         else:
             raise RuntimeError(f"Heroku Inference API stream call failed after {max_retries} retries: {last_exc}")
 
-    def _parse_sse_event(self, event: sseclient.Event) -> Optional[str]:
-        """Parse a single SSE event and extract content."""
+    def _parse_sse_event(self, event: sseclient.Event) -> Optional[Dict[str, Any]]:
+        """Parse a single SSE event and extract content and metadata."""
         try:
             # Handle the special "[DONE]" message
             if event.data == "[DONE]":
@@ -291,7 +295,23 @@ class ChatHeroku(BaseChatModel):
             # For streaming, use 'delta' instead of 'message'
             choice = data["choices"][0]
             delta = choice.get("delta", {})
-            return delta.get("content", "")
+            content = delta.get("content", "")
+
+            # Extract usage metadata if available
+            usage = data.get("usage", {})
+            usage_metadata = None
+            if usage:
+                usage_metadata = {
+                    "input_tokens": usage.get("prompt_tokens"),
+                    "output_tokens": usage.get("completion_tokens"),
+                    "total_tokens": usage.get("total_tokens"),
+                }
+
+            return {
+                "content": content,
+                "usage_metadata": usage_metadata,
+                "response_metadata": data,
+            }
         except (json.JSONDecodeError, KeyError, IndexError):
             # Skip malformed JSON lines or missing data
             return None
@@ -309,9 +329,21 @@ class ChatHeroku(BaseChatModel):
         client = self._make_streaming_request(payload)
         try:
             for event in client.events():
-                content = self._parse_sse_event(event)
-                if content is not None:
-                    ai_msg_chunk = AIMessageChunk(content=content)
+                parsed_event = self._parse_sse_event(event)
+                if parsed_event is not None:
+                    content = parsed_event["content"]
+                    usage_metadata = parsed_event.get("usage_metadata")
+                    response_metadata = parsed_event.get("response_metadata", {})
+
+                    # Add model_name to response_metadata for usage tracking
+                    if response_metadata:
+                        response_metadata["model_name"] = response_metadata.get("model", self._get_model())
+
+                    ai_msg_chunk = AIMessageChunk(
+                        content=content,
+                        usage_metadata=usage_metadata,
+                        response_metadata={"model_name": response_metadata.get("model", self._get_model())} if response_metadata else {},
+                    )
                     chunk = ChatGenerationChunk(message=ai_msg_chunk)
                     if run_manager:
                         run_manager.on_llm_new_token(content, chunk=chunk)
