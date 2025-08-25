@@ -16,20 +16,29 @@ langchain-heroku/
   CONTRIBUTING.md
   SECURITY.md
   docs/
-    ...
+    embeddings.ipynb                    # Interactive embeddings examples
+    completions.ipynb                   # Interactive chat completions examples
+    embeddings_integration.md           # Embeddings integration documentation
+    chat_completions_integration.md     # Chat completions integration documentation
+    chat.ipynb                          # Legacy chat examples
   langchain_heroku/
     __init__.py
-    chat_models.py
+    chat_models.py                      # Chat completions integration
+    embeddings.py                       # Embeddings integration
+    config.py                           # Shared configuration management
     py.typed
-    ...
   scripts/
     check_imports.py
     lint_imports.sh
   tests/
     test_chat_models.py
     test_chat_models_integration.py
+    test_embeddings.py                  # Embeddings unit tests
     test_compile.py
-    ...
+    integration_tests/
+      test_embeddings_integration.py    # Embeddings integration tests
+    unit_tests/
+      test_embeddings.py                # Embeddings unit tests
   .gitignore
 ```
 
@@ -91,6 +100,26 @@ To use this integration, you need to set up Heroku's Managed Inference and Agent
 - `claude-3-haiku-latest` - Claude 3 Haiku
 
 **Pricing**: Models are billed per token used. See the [Heroku AI pricing page](https://devcenter.heroku.com/articles/heroku-ai-pricing) for current rates.
+
+## 📚 Documentation
+
+### Interactive Examples
+
+- **[embeddings.ipynb](docs/embeddings.ipynb)** - Interactive Jupyter notebook demonstrating Heroku Embeddings integration
+- **[completions.ipynb](docs/completions.ipynb)** - Interactive Jupyter notebook demonstrating Heroku Chat Completions integration
+
+### Integration Guides
+
+- **[Embeddings Integration](docs/embeddings_integration.md)** - Comprehensive guide for Heroku Embeddings with LangChain
+- **[Chat Completions Integration](docs/chat_completions_integration.md)** - Complete guide for Heroku Chat Completions with LangChain
+
+### Features
+
+- **OpenAI Compatibility**: Drop-in replacement for OpenAI models
+- **Heroku Advanced Features**: Access to Heroku-specific capabilities
+- **Streaming Support**: Real-time streaming for chat completions
+- **Metadata Retrieval**: Access to additional API response information
+- **LangChain Integration**: Seamless integration with LangChain ecosystem
 
 ## 🧪 Running Tests
 

@@ -1,7 +1,6 @@
 """Heroku chat models."""
 
 import json
-import os
 from typing import Any, Dict, Generator, List, Optional
 
 import httpx
@@ -20,6 +19,8 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
+
+from langchain_heroku.config import HerokuConfig
 
 
 class ChatHeroku(BaseChatModel):
@@ -101,16 +102,16 @@ class ChatHeroku(BaseChatModel):
         return {"model": self.model}
 
     def _get_env(self, key: str, default: Optional[str] = None) -> Optional[str]:
-        return os.environ.get(key, default)
+        return HerokuConfig.get_env(key, default)
 
     def _get_api_key(self) -> Optional[str]:
-        return self.api_key or self._get_env("INFERENCE_KEY") or self._get_env("HEROKU_API_KEY")
+        return HerokuConfig.get_api_key(self.api_key)
 
     def _get_inference_url(self) -> Optional[str]:
-        return self.inference_url or self._get_env("INFERENCE_URL")
+        return HerokuConfig.get_inference_url(self.inference_url)
 
     def _get_model(self) -> Optional[str]:
-        return self.model or self._get_env("INFERENCE_MODEL_ID")
+        return HerokuConfig.get_model_id(self.model)
 
     def _messages_to_api(self, messages: List[BaseMessage]) -> List[dict]:
         # Map LangChain message types to API roles with explicit type checking
@@ -162,12 +163,7 @@ class ChatHeroku(BaseChatModel):
 
     def _validate_config(self) -> None:
         """Validate that all required configuration is present."""
-        if not self._get_inference_url():
-            raise ValueError("INFERENCE_URL must be set via env or init param.")
-        if not self._get_api_key():
-            raise ValueError("INFERENCE_KEY or HEROKU_API_KEY must be set via env or init param.")
-        if not self._get_model():
-            raise ValueError("model or INFERENCE_MODEL_ID must be set via env or init param.")
+        HerokuConfig.validate_config(inference_url=self.inference_url, api_key=self.api_key, model_id=self.model)
 
     def _build_payload(self, messages: List[BaseMessage], stop: Optional[List[str]] = None) -> Dict[str, Any]:
         """Build the API payload for the chat completion request."""
