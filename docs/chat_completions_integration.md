@@ -229,6 +229,130 @@ print(result)
 - **INFERENCE_KEY**: API key for authentication
 - **INFERENCE_MODEL_ID**: Default model ID
 
+## Tool Calling
+
+The `ChatHeroku` class supports tool calling with various tool formats, enabling function calling capabilities:
+
+### Basic Tool Calling
+
+```python
+from langchain_heroku.chat_models import ChatHeroku
+from langchain_core.messages import HumanMessage
+
+# Define a simple function tool
+def get_current_weather(location: str, unit: str = "celsius") -> str:
+    """Get the current weather for a location.
+    
+    Args:
+        location: The city and state, e.g. San Francisco, CA
+        unit: Temperature unit (celsius or fahrenheit)
+    """
+    # In a real implementation, this would call a weather API
+    return f"Weather in {location}: 22°{unit[0].upper()}, partly cloudy"
+
+# Bind the tool to the model
+chat = ChatHeroku()
+chat_with_tools = chat.bind_tools([get_current_weather])
+
+# Use the tool
+messages = [HumanMessage(content="What's the weather like in San Francisco?")]
+result = chat_with_tools.invoke(messages)
+print(result.content)
+```
+
+### Using BaseTool
+
+```python
+from langchain_core.tools import BaseTool
+from pydantic import BaseModel, Field
+from typing import Optional
+
+class SearchInput(BaseModel):
+    query: str = Field(description="The search query")
+    max_results: Optional[int] = Field(default=10, description="Maximum number of results")
+
+class WebSearchTool(BaseTool):
+    name: str = "web_search"
+    description: str = "Search the web for information"
+    args_schema = SearchInput
+    
+    def _run(self, query: str, max_results: Optional[int] = 10) -> str:
+        # In a real implementation, this would perform a web search
+        return f"Search results for '{query}' (showing up to {max_results} results)"
+
+# Bind the BaseTool
+search_tool = WebSearchTool()
+chat_with_search = chat.bind_tools([search_tool])
+
+# Use with tool choice control
+chat_required = chat.bind_tools([search_tool], tool_choice="required")
+chat_auto = chat.bind_tools([search_tool], tool_choice="auto")
+```
+
+### Dict Format Tools
+
+```python
+# Define tools using OpenAI's function calling format
+calculator_tool = {
+    "type": "function",
+    "function": {
+        "name": "calculate",
+        "description": "Perform mathematical calculations",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "expression": {
+                    "type": "string",
+                    "description": "Mathematical expression to evaluate"
+                }
+            },
+            "required": ["expression"]
+        }
+    }
+}
+
+# Multiple tools
+tools = [get_current_weather, calculator_tool]
+chat_multi_tools = chat.bind_tools(tools)
+```
+
+### Tool Choice Options
+
+```python
+# Auto mode (default) - model decides when to use tools
+chat_auto = chat.bind_tools([get_current_weather], tool_choice="auto")
+
+# Required mode - model must use a tool
+chat_required = chat.bind_tools([get_current_weather], tool_choice="required")
+
+# Specific tool - force usage of a particular tool
+chat_specific = chat.bind_tools([get_current_weather], tool_choice="get_current_weather")
+```
+
+### Advanced Tool Usage
+
+```python
+from langchain_core.messages import SystemMessage, HumanMessage
+
+# Create a conversational agent with tools
+messages = [
+    SystemMessage(content="You are a helpful assistant with access to weather and calculation tools."),
+    HumanMessage(content="What's the weather in New York, and what's 25 + 17?")
+]
+
+# The model can use both tools in the same conversation
+chat_with_tools = chat.bind_tools([get_current_weather, calculator_tool])
+result = chat_with_tools.invoke(messages)
+
+# Handle tool calls in the response
+if hasattr(result, 'tool_calls') and result.tool_calls:
+    print("Tool calls made:")
+    for tool_call in result.tool_calls:
+        print(f"- {tool_call['function']['name']}: {tool_call['function']['arguments']}")
+
+print(f"Response: {result.content}")
+```
+
 ## Error Handling
 
 The integration includes robust error handling:

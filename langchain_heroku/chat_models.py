@@ -1,7 +1,7 @@
 """Heroku chat models."""
 
 import json
-from typing import Any, Dict, Generator, List, Optional
+from typing import Any, Callable, Dict, Generator, List, Optional, Sequence, Union
 
 import httpx
 import sseclient
@@ -19,6 +19,7 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
+from langchain_core.tools import BaseTool
 
 from langchain_heroku.config import HerokuConfig
 
@@ -346,3 +347,144 @@ class ChatHeroku(BaseChatModel):
                     yield chunk
         finally:
             client.close()
+
+    def _convert_tools_to_api_format(self, tools: Sequence[Union[Dict[str, Any], type, Callable, BaseTool]]) -> List[Dict[str, Any]]:
+        """Convert tools to the API format expected by Heroku Inference API."""
+        api_tools = []
+        
+        for tool in tools:
+            if isinstance(tool, dict):
+                # Tool is already in dict format
+                api_tools.append(tool)
+            elif isinstance(tool, BaseTool):
+                # Convert BaseTool to API format
+                base_tool_function_def: Dict[str, Any] = {
+                    "name": tool.name,
+                    "description": tool.description,
+                }
+                
+                # Add parameters if available
+                if hasattr(tool, 'args_schema') and tool.args_schema:
+                    try:
+                        # Get the JSON schema from the Pydantic model
+                        if hasattr(tool.args_schema, 'model_json_schema'):
+                            schema = tool.args_schema.model_json_schema()
+                            base_tool_function_def["parameters"] = schema
+                    except Exception:
+                        # Fallback if schema extraction fails
+                        pass
+                
+                tool_def = {
+                    "type": "function",
+                    "function": base_tool_function_def
+                }
+                        
+                api_tools.append(tool_def)
+            elif callable(tool):
+                # Handle callable functions - extract name and docstring
+                func_name = getattr(tool, '__name__', str(tool))
+                func_description = getattr(tool, '__doc__', f"Function {func_name}")
+                
+                callable_function_def: Dict[str, Any] = {
+                    "name": func_name,
+                    "description": func_description.strip() if func_description else func_name,
+                }
+                
+                # Try to extract parameters from function signature
+                try:
+                    import inspect
+                    sig = inspect.signature(tool)
+                    properties: Dict[str, Any] = {}
+                    required: List[str] = []
+                    
+                    for param_name, param in sig.parameters.items():
+                        if param_name != 'self':  # Skip self parameter
+                            param_info = {"type": "string"}  # Default type
+                            
+                            # Add to required if no default value
+                            if param.default == inspect.Parameter.empty:
+                                required.append(param_name)
+                                
+                            properties[param_name] = param_info
+                    
+                    if properties:
+                        parameters = {
+                            "type": "object",
+                            "properties": properties,
+                            "required": required
+                        }
+                        callable_function_def["parameters"] = parameters
+                        
+                except Exception:
+                    # If signature extraction fails, continue without parameters
+                    pass
+                
+                tool_def = {
+                    "type": "function",
+                    "function": callable_function_def
+                }
+                    
+                api_tools.append(tool_def)
+            elif isinstance(tool, type):
+                # Handle class types - treat as tool schema
+                class_name = getattr(tool, '__name__', str(tool))
+                class_description = getattr(tool, '__doc__', f"Tool {class_name}")
+                
+                class_function_def: Dict[str, Any] = {
+                    "name": class_name,
+                    "description": class_description.strip() if class_description else class_name,
+                }
+                
+                # Try to extract schema if it's a Pydantic model
+                try:
+                    if hasattr(tool, 'model_json_schema'):
+                        schema = tool.model_json_schema()
+                        class_function_def["parameters"] = schema
+                except Exception:
+                    pass
+                
+                tool_def = {
+                    "type": "function", 
+                    "function": class_function_def
+                }
+                    
+                api_tools.append(tool_def)
+        
+        return api_tools
+
+    def bind_tools(
+        self,
+        tools: Sequence[Union[Dict[str, Any], type, Callable, BaseTool]],
+        *,
+        tool_choice: Optional[Union[str]] = None,
+        **kwargs: Any,
+    ) -> "ChatHeroku":
+        """Bind tools to the model.
+
+        Args:
+            tools: Sequence of tools to bind to the model.
+            tool_choice: The tool to use. If "any" then any tool can be used.
+                Can be "auto", "required", or a specific tool name.
+            **kwargs: Additional arguments to pass to the model.
+
+        Returns:
+            A new ChatHeroku instance with tools bound.
+        """
+        # Convert tools to API format
+        api_tools = self._convert_tools_to_api_format(tools)
+        
+        # Create a new instance with the same parameters but with tools bound
+        return self.__class__(
+            model=self.model,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            timeout=self.timeout,
+            stop=self.stop,
+            api_key=self.api_key,
+            inference_url=self.inference_url,
+            tools=api_tools,
+            tool_choice=tool_choice,
+            streaming=self.streaming,
+            top_p=self.top_p,
+            extended_thinking=self.extended_thinking,
+        )
