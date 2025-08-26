@@ -161,3 +161,37 @@ chat = ChatHeroku(streaming=True)
 for chunk in chat.stream([HumanMessage(content="Tell me a story.")]):
     print(chunk.content, end="")
 ```
+
+### Tool Calling
+
+ChatHeroku supports tool calling functionality with both constructor parameters and the `bind_tools` method:
+
+```python
+# Define tools
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get the current weather for a location",
+            "parameters": {
+                "type": "object",
+                "properties": {"location": {"type": "string", "description": "The city and state"}},
+                "required": ["location"],
+            },
+        },
+    }
+]
+
+# Method 1: Constructor parameters
+tool_llm = ChatHeroku(tools=tools, tool_choice="auto")
+
+# Method 2: bind_tools method (LangChain standard)
+base_llm = ChatHeroku()
+tool_llm = base_llm.bind_tools(tools, tool_choice="auto")
+
+# Use the model with tools
+response = tool_llm.invoke("What's the weather like in New York?")
+if hasattr(response, 'additional_kwargs') and 'tool_calls' in response.additional_kwargs:
+    print("Tool calls:", response.additional_kwargs['tool_calls'])
+```

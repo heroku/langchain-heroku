@@ -1,6 +1,6 @@
 """Test chat model integration."""
 
-from typing import List, Type
+from typing import Any, Dict, List, Type
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -34,8 +34,19 @@ class TestChatHerokuUnit(ChatModelUnitTests):
         return {
             "model": "bird-brain-001",
             "temperature": 0,
-            "parrot_buffer_length": 50,
+            "api_key": "test",
+            "inference_url": "https://dummy.url",
         }
+
+    @property
+    def has_tool_calling(self) -> bool:
+        """Whether the model supports tool calling."""
+        return True
+
+    @property
+    def has_structured_output(self) -> bool:
+        """Whether the model supports structured output."""
+        return True
 
     def test_chat_model_params_example(self) -> None:
         """Test that the chat model can be initialized with the example parameters."""
@@ -325,6 +336,48 @@ def test_chat_heroku_tools_parameter() -> None:
             llm.invoke("Test tools")
             args, kwargs = mock_client.post.call_args
             assert kwargs["json"]["tools"] == tools
+
+
+def test_chat_heroku_bind_tools() -> None:
+    """Test that the bind_tools method properly creates a new instance with tools bound."""
+    with patch.dict("os.environ", {"INFERENCE_URL": "https://dummy.url", "INFERENCE_KEY": "dummy-key"}):
+        # Create base instance
+        base_llm = ChatHeroku(model="bird-brain-001", temperature=0.7)
+
+        # Define tools
+        tools: List[Dict[str, Any]] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get the current weather for a location",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"location": {"type": "string", "description": "The city and state"}},
+                        "required": ["location"],
+                    },
+                },
+            }
+        ]
+
+        # Bind tools
+        tool_llm = base_llm.bind_tools(tools, tool_choice="auto")
+
+        # Verify it's a new instance
+        assert tool_llm is not base_llm
+        assert tool_llm.tools == tools
+        assert tool_llm.tool_choice == "auto"
+
+        # Verify other parameters are preserved
+        assert tool_llm.model == base_llm.model
+        assert tool_llm.temperature == base_llm.temperature
+        assert tool_llm.streaming == base_llm.streaming
+
+        # Test with additional kwargs
+        custom_llm = base_llm.bind_tools(tools, temperature=0.5, max_tokens=100)
+        assert custom_llm.tools == tools
+        assert custom_llm.temperature == 0.5
+        assert custom_llm.max_tokens == 100
 
 
 def test_chat_heroku_allow_ignored_params() -> None:
