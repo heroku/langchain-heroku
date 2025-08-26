@@ -1,9 +1,10 @@
 """Heroku chat models."""
 
 import json
+
+# Removed dataclass imports - using Pydantic model
 from typing import Any, Callable, Dict, Generator, List, Optional, Sequence, Union
 
-import httpx
 import sseclient
 from langchain_core.callbacks import (
     CallbackManagerForLLMRun,
@@ -21,7 +22,9 @@ from langchain_core.messages import (
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langchain_core.tools import BaseTool
 
-from langchain_heroku.config import HerokuConfig
+from langchain_heroku.config import HerokuClientConfig, HerokuConfig
+from langchain_heroku.http_client import HerokuHTTPClient
+from langchain_heroku.tool_converter import ToolConverter
 
 
 class ChatHeroku(BaseChatModel):
@@ -81,6 +84,7 @@ class ChatHeroku(BaseChatModel):
 
     """
 
+    # Core parameters (Pydantic fields)
     model: Optional[str] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
@@ -93,6 +97,11 @@ class ChatHeroku(BaseChatModel):
     streaming: bool = False
     top_p: Optional[float] = None  # Nucleus sampling parameter
     extended_thinking: Optional[Dict[str, Any]] = None  # Extended thinking for Claude Sonnet 3.7 & 4
+    
+    def __init__(self, **kwargs: Any) -> None:
+        """Initialize ChatHeroku with configuration."""
+        super().__init__(**kwargs)
+        self._config: Optional[HerokuClientConfig] = None
 
     @property
     def _llm_type(self) -> str:
@@ -162,9 +171,21 @@ class ChatHeroku(BaseChatModel):
             usage_metadata=usage_metadata if usage_metadata else None,
         )
 
+    def _get_config(self) -> HerokuClientConfig:
+        """Get cached or create new configuration."""
+        if self._config is None:
+            self._config = HerokuConfig.create_client_config(
+                inference_url=self.inference_url,
+                api_key=self.api_key,
+                model_id=self.model,
+                timeout=self.timeout or 30
+            )
+        return self._config
+
     def _validate_config(self) -> None:
         """Validate that all required configuration is present."""
-        HerokuConfig.validate_config(inference_url=self.inference_url, api_key=self.api_key, model_id=self.model)
+        # This will raise HerokuConfigurationError if invalid
+        self._get_config()
 
     def _build_payload(self, messages: List[BaseMessage], stop: Optional[List[str]] = None) -> Dict[str, Any]:
         """Build the API payload for the chat completion request."""
@@ -198,22 +219,15 @@ class ChatHeroku(BaseChatModel):
 
     def _make_api_request(self, payload: dict) -> dict:
         """Make the API request with retry logic."""
-        url = self._get_inference_url()
-        api_key = self._get_api_key()
-        timeout = self.timeout or 30
-        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-
-        max_retries = 2
-        for _ in range(max_retries):
-            try:
-                with httpx.Client(timeout=timeout) as client:
-                    resp = client.post(f"{url}/v1/chat/completions", json=payload, headers=headers)
-                    resp.raise_for_status()
-                    return resp.json()
-            except Exception as e:
-                last_exc = e
-        else:
-            raise RuntimeError(f"Heroku Inference API call failed after {max_retries} retries: {last_exc}")
+        config = self._get_config()
+        return HerokuHTTPClient.make_request(
+            url=config.inference_url,
+            endpoint="v1/chat/completions",
+            payload=payload,
+            api_key=config.api_key,
+            timeout=config.timeout,
+            max_retries=config.max_retries
+        )
 
     def _generate(
         self,
@@ -258,28 +272,15 @@ class ChatHeroku(BaseChatModel):
 
     def _make_streaming_request(self, payload: Dict[str, Any]) -> sseclient.SSEClient:
         """Make the streaming API request with retry logic."""
-        url = self._get_inference_url()
-        api_key = self._get_api_key()
-        timeout = self.timeout or 30
-        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-
-        max_retries = 2
-        for _ in range(max_retries):
-            try:
-                with httpx.Client(timeout=timeout) as client:
-                    response = client.post(f"{url}/v1/chat/completions", json=payload, headers=headers)
-                    response.raise_for_status()
-
-                    # Convert httpx response to work with sseclient
-                    def response_generator() -> Generator[bytes, None, None]:
-                        for chunk in response.iter_bytes():
-                            yield chunk
-
-                    return sseclient.SSEClient(response_generator())
-            except Exception as e:
-                last_exc = e
-        else:
-            raise RuntimeError(f"Heroku Inference API stream call failed after {max_retries} retries: {last_exc}")
+        config = self._get_config()
+        return HerokuHTTPClient.make_streaming_request(
+            url=config.inference_url,
+            endpoint="v1/chat/completions",
+            payload=payload,
+            api_key=config.api_key,
+            timeout=config.timeout,
+            max_retries=config.max_retries
+        )
 
     def _parse_sse_event(self, event: sseclient.Event) -> Optional[Dict[str, Any]]:
         """Parse a single SSE event and extract content and metadata."""
@@ -350,107 +351,7 @@ class ChatHeroku(BaseChatModel):
 
     def _convert_tools_to_api_format(self, tools: Sequence[Union[Dict[str, Any], type, Callable, BaseTool]]) -> List[Dict[str, Any]]:
         """Convert tools to the API format expected by Heroku Inference API."""
-        api_tools = []
-        
-        for tool in tools:
-            if isinstance(tool, dict):
-                # Tool is already in dict format
-                api_tools.append(tool)
-            elif isinstance(tool, BaseTool):
-                # Convert BaseTool to API format
-                base_tool_function_def: Dict[str, Any] = {
-                    "name": tool.name,
-                    "description": tool.description,
-                }
-                
-                # Add parameters if available
-                if hasattr(tool, 'args_schema') and tool.args_schema:
-                    try:
-                        # Get the JSON schema from the Pydantic model
-                        if hasattr(tool.args_schema, 'model_json_schema'):
-                            schema = tool.args_schema.model_json_schema()
-                            base_tool_function_def["parameters"] = schema
-                    except Exception:
-                        # Fallback if schema extraction fails
-                        pass
-                
-                tool_def = {
-                    "type": "function",
-                    "function": base_tool_function_def
-                }
-                        
-                api_tools.append(tool_def)
-            elif callable(tool):
-                # Handle callable functions - extract name and docstring
-                func_name = getattr(tool, '__name__', str(tool))
-                func_description = getattr(tool, '__doc__', f"Function {func_name}")
-                
-                callable_function_def: Dict[str, Any] = {
-                    "name": func_name,
-                    "description": func_description.strip() if func_description else func_name,
-                }
-                
-                # Try to extract parameters from function signature
-                try:
-                    import inspect
-                    sig = inspect.signature(tool)
-                    properties: Dict[str, Any] = {}
-                    required: List[str] = []
-                    
-                    for param_name, param in sig.parameters.items():
-                        if param_name != 'self':  # Skip self parameter
-                            param_info = {"type": "string"}  # Default type
-                            
-                            # Add to required if no default value
-                            if param.default == inspect.Parameter.empty:
-                                required.append(param_name)
-                                
-                            properties[param_name] = param_info
-                    
-                    if properties:
-                        parameters = {
-                            "type": "object",
-                            "properties": properties,
-                            "required": required
-                        }
-                        callable_function_def["parameters"] = parameters
-                        
-                except Exception:
-                    # If signature extraction fails, continue without parameters
-                    pass
-                
-                tool_def = {
-                    "type": "function",
-                    "function": callable_function_def
-                }
-                    
-                api_tools.append(tool_def)
-            elif isinstance(tool, type):
-                # Handle class types - treat as tool schema
-                class_name = getattr(tool, '__name__', str(tool))
-                class_description = getattr(tool, '__doc__', f"Tool {class_name}")
-                
-                class_function_def: Dict[str, Any] = {
-                    "name": class_name,
-                    "description": class_description.strip() if class_description else class_name,
-                }
-                
-                # Try to extract schema if it's a Pydantic model
-                try:
-                    if hasattr(tool, 'model_json_schema'):
-                        schema = tool.model_json_schema()
-                        class_function_def["parameters"] = schema
-                except Exception:
-                    pass
-                
-                tool_def = {
-                    "type": "function", 
-                    "function": class_function_def
-                }
-                    
-                api_tools.append(tool_def)
-        
-        return api_tools
+        return ToolConverter.convert_tools(tools)
 
     def bind_tools(
         self,

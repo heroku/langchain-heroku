@@ -1,11 +1,12 @@
 """Heroku embeddings models."""
 
+# Removed dataclass imports - using standard class
 from typing import Any, Dict, List, Optional, Union
 
-import httpx
 from langchain_core.embeddings import Embeddings
 
-from langchain_heroku.config import HerokuConfig
+from langchain_heroku.config import HerokuClientConfig, HerokuConfig
+from langchain_heroku.http_client import HerokuHTTPClient
 
 
 class HerokuEmbeddings(Embeddings):
@@ -42,36 +43,22 @@ class HerokuEmbeddings(Embeddings):
         )
     """
 
-    model: Optional[str] = None
-    api_key: Optional[str] = None
-    inference_url: Optional[str] = None
-    timeout: Optional[int] = None
-
-    # Heroku-specific parameters (not OpenAI compatible)
-    input_type: Optional[str] = None  # "search_document", "search_query", "classification", "clustering"
-    encoding_format: Optional[str] = None  # "raw" or "base64"
-    embedding_type: Optional[str] = None  # "float", "int8", "uint8", "binary", "ubinary"
-    allow_ignored_params: Optional[bool] = None  # Whether to ignore unsupported parameters
-
     def __init__(self, **kwargs: Any) -> None:
         """Initialize HerokuEmbeddings with configuration."""
-        # Extract parameters from kwargs
+        # Core parameters
         self.model = kwargs.get("model")
         self.api_key = kwargs.get("api_key")
         self.inference_url = kwargs.get("inference_url")
         self.timeout = kwargs.get("timeout")
-        self.input_type = kwargs.get("input_type")
-        self.encoding_format = kwargs.get("encoding_format")
-        self.embedding_type = kwargs.get("embedding_type")
-        self.allow_ignored_params = kwargs.get("allow_ignored_params")
 
-        # Set defaults for OpenAI compatibility
-        if self.encoding_format is None:
-            self.encoding_format = "raw"
-        if self.embedding_type is None:
-            self.embedding_type = "float"
-        if self.allow_ignored_params is None:
-            self.allow_ignored_params = True
+        # Heroku-specific parameters (not OpenAI compatible)
+        self.input_type = kwargs.get("input_type")
+        self.encoding_format = kwargs.get("encoding_format", "raw")
+        self.embedding_type = kwargs.get("embedding_type", "float")
+        self.allow_ignored_params = kwargs.get("allow_ignored_params", True)
+        
+        # Private cached config
+        self._config: Optional[HerokuClientConfig] = None
 
     @property
     def _llm_type(self) -> str:
@@ -103,9 +90,21 @@ class HerokuEmbeddings(Embeddings):
         """Get model ID from instance or environment."""
         return HerokuConfig.get_model_id(self.model)
 
+    def _get_config(self) -> HerokuClientConfig:
+        """Get cached or create new configuration."""
+        if self._config is None:
+            self._config = HerokuConfig.create_client_config(
+                inference_url=self.inference_url,
+                api_key=self.api_key,
+                model_id=self.model,
+                timeout=self.timeout or 30
+            )
+        return self._config
+    
     def _validate_config(self) -> None:
         """Validate that all required configuration is present."""
-        HerokuConfig.validate_config(inference_url=self.inference_url, api_key=self.api_key, model_id=self.model)
+        # This will raise HerokuConfigurationError if invalid
+        self._get_config()
 
     def _validate_input_type(self, input_type: Optional[str]) -> None:
         """Validate input_type parameter if provided."""
@@ -149,22 +148,15 @@ class HerokuEmbeddings(Embeddings):
 
     def _make_api_request(self, payload: dict) -> dict:
         """Make the API request with retry logic."""
-        url = self._get_inference_url()
-        api_key = self._get_api_key()
-        timeout = self.timeout or 30
-        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-
-        max_retries = 2
-        for _ in range(max_retries):
-            try:
-                with httpx.Client(timeout=timeout) as client:
-                    resp = client.post(f"{url}/v1/embeddings", json=payload, headers=headers)
-                    resp.raise_for_status()
-                    return resp.json()
-            except Exception as e:
-                last_exc = e
-        else:
-            raise RuntimeError(f"Heroku Embeddings API call failed after {max_retries} retries: {last_exc}")
+        config = self._get_config()
+        return HerokuHTTPClient.make_request(
+            url=config.inference_url,
+            endpoint="v1/embeddings",
+            payload=payload,
+            api_key=config.api_key,
+            timeout=config.timeout,
+            max_retries=config.max_retries
+        )
 
     def _extract_embeddings(self, response: dict) -> List[List[float]]:
         """Extract embeddings from the API response."""
