@@ -56,7 +56,7 @@ class HerokuEmbeddings(Embeddings):
         self.encoding_format = kwargs.get("encoding_format", "raw")
         self.embedding_type = kwargs.get("embedding_type", "float")
         self.allow_ignored_params = kwargs.get("allow_ignored_params", True)
-        
+
         # Private cached config
         self._config: Optional[HerokuClientConfig] = None
 
@@ -94,13 +94,10 @@ class HerokuEmbeddings(Embeddings):
         """Get cached or create new configuration."""
         if self._config is None:
             self._config = HerokuConfig.create_client_config(
-                inference_url=self.inference_url,
-                api_key=self.api_key,
-                model_id=self.model,
-                timeout=self.timeout or 30
+                inference_url=self.inference_url, api_key=self.api_key, model_id=self.model, timeout=self.timeout or 30
             )
         return self._config
-    
+
     def _validate_config(self) -> None:
         """Validate that all required configuration is present."""
         # This will raise HerokuConfigurationError if invalid
@@ -155,7 +152,7 @@ class HerokuEmbeddings(Embeddings):
             payload=payload,
             api_key=config.api_key,
             timeout=config.timeout,
-            max_retries=config.max_retries
+            max_retries=config.max_retries,
         )
 
     def _extract_embeddings(self, response: dict) -> List[List[float]]:

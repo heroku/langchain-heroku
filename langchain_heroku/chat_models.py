@@ -1,8 +1,6 @@
 """Heroku chat models."""
 
 import json
-
-# Removed dataclass imports - using Pydantic model
 from typing import Any, Callable, Dict, Generator, List, Optional, Sequence, Union
 
 import sseclient
@@ -21,6 +19,7 @@ from langchain_core.messages import (
 )
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langchain_core.tools import BaseTool
+from pydantic import Field
 
 from langchain_heroku.config import HerokuClientConfig, HerokuConfig
 from langchain_heroku.http_client import HerokuHTTPClient
@@ -85,19 +84,19 @@ class ChatHeroku(BaseChatModel):
     """
 
     # Core parameters (Pydantic fields)
-    model: Optional[str] = None
-    temperature: Optional[float] = None
-    max_tokens: Optional[int] = None
-    timeout: Optional[int] = None
-    stop: Optional[List[str]] = None
-    api_key: Optional[str] = None
-    inference_url: Optional[str] = None
-    tools: Optional[List[dict]] = None  # For tool calling
-    tool_choice: Optional[Any] = None  # Controls tool selection per Heroku API
-    streaming: bool = False
-    top_p: Optional[float] = None  # Nucleus sampling parameter
-    extended_thinking: Optional[Dict[str, Any]] = None  # Extended thinking for Claude Sonnet 3.7 & 4
-    
+    model: Optional[str] = Field(default=None, description="Model identifier")
+    temperature: Optional[float] = Field(default=None, description="Sampling temperature")
+    max_tokens: Optional[int] = Field(default=None, description="Maximum tokens to generate")
+    timeout: Optional[int] = Field(default=None, description="Request timeout in seconds")
+    stop: Optional[List[str]] = Field(default=None, description="Stop sequences")
+    api_key: Optional[str] = Field(default=None, description="API key for authentication")
+    inference_url: Optional[str] = Field(default=None, description="Inference API URL")
+    tools: Optional[List[dict]] = Field(default=None, description="Tools for function calling")
+    tool_choice: Optional[Any] = Field(default=None, description="Tool selection strategy")
+    streaming: bool = Field(default=False, description="Enable streaming responses")
+    top_p: Optional[float] = Field(default=None, description="Nucleus sampling parameter")
+    extended_thinking: Optional[Dict[str, Any]] = Field(default=None, description="Extended thinking configuration")
+
     def __init__(self, **kwargs: Any) -> None:
         """Initialize ChatHeroku with configuration."""
         super().__init__(**kwargs)
@@ -105,7 +104,7 @@ class ChatHeroku(BaseChatModel):
 
     @property
     def _llm_type(self) -> str:
-        return "mia"
+        return "heroku"
 
     @property
     def _identifying_params(self) -> Dict[str, Any]:
@@ -175,10 +174,7 @@ class ChatHeroku(BaseChatModel):
         """Get cached or create new configuration."""
         if self._config is None:
             self._config = HerokuConfig.create_client_config(
-                inference_url=self.inference_url,
-                api_key=self.api_key,
-                model_id=self.model,
-                timeout=self.timeout or 30
+                inference_url=self.inference_url, api_key=self.api_key, model_id=self.model, timeout=self.timeout or 30, max_retries=2
             )
         return self._config
 
@@ -226,7 +222,7 @@ class ChatHeroku(BaseChatModel):
             payload=payload,
             api_key=config.api_key,
             timeout=config.timeout,
-            max_retries=config.max_retries
+            max_retries=config.max_retries,
         )
 
     def _generate(
@@ -279,7 +275,7 @@ class ChatHeroku(BaseChatModel):
             payload=payload,
             api_key=config.api_key,
             timeout=config.timeout,
-            max_retries=config.max_retries
+            max_retries=config.max_retries,
         )
 
     def _parse_sse_event(self, event: sseclient.Event) -> Optional[Dict[str, Any]]:
@@ -321,33 +317,60 @@ class ChatHeroku(BaseChatModel):
         run_manager: Optional[CallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> Generator[ChatGenerationChunk, None, None]:
-        self._validate_config()
-        payload = self._build_streaming_payload(messages, stop)
-
-        client = self._make_streaming_request(payload)
+        """Stream chat completions with enhanced error handling and resource management."""
         try:
+            self._validate_config()
+            payload = self._build_streaming_payload(messages, stop)
+        except Exception as e:
+            if run_manager:
+                run_manager.on_llm_error(e)
+            raise
+
+        client = None
+        try:
+            client = self._make_streaming_request(payload)
+
             for event in client.events():
-                parsed_event = self._parse_sse_event(event)
-                if parsed_event is not None:
-                    content = parsed_event["content"]
-                    usage_metadata = parsed_event.get("usage_metadata")
-                    response_metadata = parsed_event.get("response_metadata", {})
+                try:
+                    parsed_event = self._parse_sse_event(event)
+                    if parsed_event is not None:
+                        content = parsed_event["content"]
+                        usage_metadata = parsed_event.get("usage_metadata")
+                        response_metadata = parsed_event.get("response_metadata", {})
 
-                    # Add model_name to response_metadata for usage tracking
-                    if response_metadata:
-                        response_metadata["model_name"] = response_metadata.get("model", self._get_model())
+                        # Add model_name to response_metadata for usage tracking
+                        if response_metadata:
+                            response_metadata["model_name"] = response_metadata.get("model", self._get_model())
 
-                    ai_msg_chunk = AIMessageChunk(
-                        content=content,
-                        usage_metadata=usage_metadata,
-                        response_metadata={"model_name": response_metadata.get("model", self._get_model())} if response_metadata else {},
-                    )
-                    chunk = ChatGenerationChunk(message=ai_msg_chunk)
+                        ai_msg_chunk = AIMessageChunk(
+                            content=content,
+                            usage_metadata=usage_metadata,
+                            response_metadata={"model_name": response_metadata.get("model", self._get_model())} if response_metadata else {},
+                        )
+                        chunk = ChatGenerationChunk(message=ai_msg_chunk)
+                        if run_manager:
+                            run_manager.on_llm_new_token(content, chunk=chunk)
+                        yield chunk
+                except Exception as e:
+                    # Log the error but continue processing if possible
                     if run_manager:
-                        run_manager.on_llm_new_token(content, chunk=chunk)
-                    yield chunk
+                        run_manager.on_llm_error(e)
+                    # Re-raise if it's a critical error
+                    if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                        raise
+                    # For other errors, we can optionally log and continue or raise
+                    raise
+        except Exception as e:
+            if run_manager:
+                run_manager.on_llm_error(e)
+            raise
         finally:
-            client.close()
+            # Ensure resources are always cleaned up
+            if client is not None:
+                try:
+                    client.close()
+                except Exception:
+                    pass  # Ignore errors during cleanup
 
     def _convert_tools_to_api_format(self, tools: Sequence[Union[Dict[str, Any], type, Callable, BaseTool]]) -> List[Dict[str, Any]]:
         """Convert tools to the API format expected by Heroku Inference API."""
@@ -359,7 +382,7 @@ class ChatHeroku(BaseChatModel):
         *,
         tool_choice: Optional[Union[str]] = None,
         **kwargs: Any,
-    ) -> "ChatHeroku":
+    ) -> Any:  # Returns RunnableBinding
         """Bind tools to the model.
 
         Args:
@@ -373,19 +396,7 @@ class ChatHeroku(BaseChatModel):
         """
         # Convert tools to API format
         api_tools = self._convert_tools_to_api_format(tools)
-        
-        # Create a new instance with the same parameters but with tools bound
-        return self.__class__(
-            model=self.model,
-            temperature=self.temperature,
-            max_tokens=self.max_tokens,
-            timeout=self.timeout,
-            stop=self.stop,
-            api_key=self.api_key,
-            inference_url=self.inference_url,
-            tools=api_tools,
-            tool_choice=tool_choice,
-            streaming=self.streaming,
-            top_p=self.top_p,
-            extended_thinking=self.extended_thinking,
-        )
+
+        # Use the parent's bind method which returns RunnableBinding
+        bound_kwargs = {"tools": api_tools, "tool_choice": tool_choice, **kwargs}
+        return self.bind(**bound_kwargs)
