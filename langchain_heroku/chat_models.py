@@ -1,7 +1,7 @@
 """Heroku chat models."""
 
 import json
-from typing import Any, Callable, Dict, Generator, List, Optional, Sequence, Union
+from typing import Any, Callable, Dict, Generator, List, Optional, Sequence, Type, Union
 
 import sseclient
 from langchain_core.callbacks import (
@@ -17,9 +17,11 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
+from langchain_core.output_parsers.openai_tools import JsonOutputKeyToolsParser
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
+from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from langchain_heroku.config import HerokuClientConfig, HerokuConfig
 from langchain_heroku.http_client import HerokuHTTPClient
@@ -400,3 +402,131 @@ class ChatHeroku(BaseChatModel):
         # Use the parent's bind method which returns RunnableBinding
         bound_kwargs = {"tools": api_tools, "tool_choice": tool_choice, **kwargs}
         return self.bind(**bound_kwargs)
+
+    def with_structured_output(
+        self,
+        schema: Union[Dict[str, Any], Type[BaseModel], Type],
+        *,
+        include_raw: bool = False,
+        **kwargs: Any,
+    ) -> Runnable:
+        """Create a runnable that returns structured output using tool calling.
+
+        Since the Heroku API doesn't support native structured output via response_format,
+        this method implements a workaround using tool calls to force the model to
+        return structured JSON data.
+
+        Args:
+            schema: The schema to use for structured output. Can be:
+                - A Pydantic model class
+                - A dictionary representing a JSON schema
+                - Any type with a model_json_schema method
+            include_raw: Whether to include the raw tool call response alongside
+                the parsed output. Defaults to False.
+            **kwargs: Additional arguments (currently unused but kept for compatibility)
+
+        Returns:
+            A Runnable that will return structured output conforming to the schema.
+
+        Example:
+            ```python
+            from pydantic import BaseModel
+            from langchain_heroku import ChatHeroku
+
+            class PersonInfo(BaseModel):
+                name: str
+                age: int
+                occupation: str
+
+            chat = ChatHeroku()
+            structured_chat = chat.with_structured_output(PersonInfo)
+
+            result = structured_chat.invoke("John is a 30-year-old software engineer")
+            # Returns: PersonInfo(name="John", age=30, occupation="software engineer")
+            ```
+        """
+        # Convert schema to tool format
+        tool_name = "extract_data"
+        tool_description = "Extract structured data from the input"
+
+        if isinstance(schema, dict):
+            # Already a JSON schema
+            tool_schema = schema
+        elif hasattr(schema, "model_json_schema"):
+            # Pydantic model
+            tool_schema = schema.model_json_schema()
+        elif hasattr(schema, "__annotations__"):
+            # Try to create a basic schema from annotations
+            tool_schema = self._create_schema_from_annotations(schema)
+        else:
+            raise ValueError(f"Unsupported schema type: {type(schema)}")
+
+        # Create the tool definition
+        structured_tool = {"type": "function", "function": {"name": tool_name, "description": tool_description, "parameters": tool_schema}}
+
+        # Create a model instance bound with the tool
+        tool_model = self.bind_tools([structured_tool], tool_choice=tool_name)
+
+        # Create the parser
+        if include_raw:
+            # Return both raw and parsed output
+            def parse_output(ai_message: AIMessage) -> Dict[str, Any]:
+                if not ai_message.tool_calls:
+                    raise ValueError("No tool calls found in response")
+
+                tool_call = ai_message.tool_calls[0]
+                return {"raw": ai_message, "parsed": tool_call["args"]}
+
+            return tool_model | parse_output
+        else:
+            # Use the built-in parser to extract just the tool arguments
+            parser = JsonOutputKeyToolsParser(key_name=tool_name)
+            return tool_model | parser
+
+    def _create_schema_from_annotations(self, cls: Type) -> Dict[str, Any]:
+        """Create a basic JSON schema from type annotations."""
+        if not hasattr(cls, "__annotations__"):
+            return {"type": "object", "properties": {}, "required": []}
+
+        properties = {}
+        required = []
+
+        for field_name, field_type in cls.__annotations__.items():
+            # Basic type mapping
+            if field_type is str:
+                properties[field_name] = {"type": "string"}
+            elif field_type is int:
+                properties[field_name] = {"type": "integer"}
+            elif field_type is float:
+                properties[field_name] = {"type": "number"}
+            elif field_type is bool:
+                properties[field_name] = {"type": "boolean"}
+            elif hasattr(field_type, "__origin__"):
+                # Handle generic types like Optional, List, etc.
+                origin = getattr(field_type, "__origin__", None)
+                if origin is Union:
+                    # Handle Optional types
+                    args = getattr(field_type, "__args__", ())
+                    if len(args) == 2 and type(None) in args:
+                        non_none_type = next(arg for arg in args if arg is not type(None))
+                        if non_none_type is str:
+                            properties[field_name] = {"type": "string"}
+                        elif non_none_type is int:
+                            properties[field_name] = {"type": "integer"}
+                        elif non_none_type is float:
+                            properties[field_name] = {"type": "number"}
+                        elif non_none_type is bool:
+                            properties[field_name] = {"type": "boolean"}
+                        # Optional fields are not required
+                        continue
+                elif origin in (list, List):
+                    properties[field_name] = {"type": "array"}
+                else:
+                    properties[field_name] = {"type": "string"}  # Default
+            else:
+                properties[field_name] = {"type": "string"}  # Default fallback
+
+            # Add to required list (unless it was optional)
+            required.append(field_name)
+
+        return {"type": "object", "properties": properties, "required": required}

@@ -85,7 +85,7 @@ class HerokuHTTPClient:
         full_url = f"{url}/{endpoint}"
 
         # Ensure parameters are proper types (handle mock objects)
-        def _safe_int(value, default):
+        def _safe_int(value: Any, default: int) -> int:
             """Safely convert value to int, handling mock objects."""
             if hasattr(value, "_mock_name") or str(type(value)).find("Mock") != -1:
                 return default
@@ -149,7 +149,7 @@ class HerokuHTTPClient:
         full_url = f"{url}/{endpoint}"
 
         # Ensure parameters are proper types (handle mock objects)
-        def _safe_int(value, default):
+        def _safe_int(value: Any, default: int) -> int:
             """Safely convert value to int, handling mock objects."""
             if hasattr(value, "_mock_name") or str(type(value)).find("Mock") != -1:
                 return default
