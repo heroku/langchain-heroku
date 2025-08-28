@@ -120,7 +120,7 @@ class HerokuHTTPClient:
 
                     # Safely parse JSON response
                     try:
-                        return response.json()
+                        return response.json()  # type: ignore[no-any-return]
                     except ValueError:
                         # If JSON parsing fails, check if it's an error response
                         error_text = response.text.strip()

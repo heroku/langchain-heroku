@@ -130,28 +130,90 @@ class ChatHeroku(BaseChatModel):
             # Handle specific message types explicitly
             if isinstance(m, SystemMessage):
                 role = "system"
+                content = str(getattr(m, "content", ""))
+                api_msgs.append({"role": role, "content": content})
             elif isinstance(m, HumanMessage):
                 role = "user"
+                content = str(getattr(m, "content", ""))
+                api_msgs.append({"role": role, "content": content})
             elif isinstance(m, AIMessage):
                 role = "assistant"
+                content = str(getattr(m, "content", ""))
+                msg_dict: Dict[str, Any] = {"role": role, "content": content}
+
+                # Add tool_calls if present
+                if hasattr(m, "tool_calls") and m.tool_calls:
+                    import json
+
+                    api_tool_calls = []
+                    for tc in m.tool_calls:
+                        # Convert LangChain tool_call format back to OpenAI format
+                        tool_call_dict = {
+                            "id": tc.get("id", f"call_{hash(tc.get('name', '') + str(tc.get('args', {})))}"),
+                            "type": "function",
+                            "function": {"name": tc["name"], "arguments": json.dumps(tc["args"])},
+                        }
+                        api_tool_calls.append(tool_call_dict)
+                    msg_dict["tool_calls"] = api_tool_calls
+
+                api_msgs.append(msg_dict)
             elif isinstance(m, ToolMessage):
                 role = "tool"
+                content = str(getattr(m, "content", ""))
+                msg_dict = {"role": role, "content": content, "tool_call_id": m.tool_call_id}
+                api_msgs.append(msg_dict)
             elif isinstance(m, FunctionMessage):
-                role = "tool"  # FunctionMessage maps to tool role for backward compatibility
+                # FunctionMessage maps to tool role for backward compatibility
+                role = "tool"
+                content = str(getattr(m, "content", ""))
+                msg_dict = {
+                    "role": role,
+                    "content": content,
+                    "tool_call_id": getattr(m, "name", "unknown"),  # FunctionMessage uses name instead of tool_call_id
+                }
+                api_msgs.append(msg_dict)
             else:
                 # Fallback to role attribute or type for custom message types
                 role = getattr(m, "role", None) or getattr(m, "type", "user") or "user"
-
-            content = str(getattr(m, "content", ""))
-            api_msgs.append({"role": role, "content": content})
+                content = str(getattr(m, "content", ""))
+                api_msgs.append({"role": role, "content": content})
         return api_msgs
 
     def _api_to_ai_message(self, resp: dict) -> AIMessage:
+        # Minimal defensive programming: handle string responses
+        if isinstance(resp, str):
+            return AIMessage(content=resp)
+
         choice = resp["choices"][0]
         msg = choice["message"]
         content = msg.get("content", "")
-        tool_calls = msg.get("tool_calls")
-        additional_kwargs = {"tool_calls": tool_calls} if tool_calls else {}
+
+        # Convert OpenAI tool_calls format to LangChain format
+        api_tool_calls = msg.get("tool_calls", [])
+        tool_calls: List[Any] = []
+        if api_tool_calls:
+            import json
+
+            from langchain_core.messages.tool import invalid_tool_call, tool_call
+
+            for tc in api_tool_calls:
+                try:
+                    # Parse arguments from JSON string
+                    args = json.loads(tc["function"]["arguments"]) if tc["function"]["arguments"] else {}
+                    # Convert to LangChain tool_call format
+                    lc_tool_call = tool_call(name=tc["function"]["name"], args=args, id=tc["id"])
+                    tool_calls.append(lc_tool_call)
+                except (json.JSONDecodeError, KeyError) as e:
+                    # If parsing fails, create an invalid tool call
+                    invalid_tc = invalid_tool_call(
+                        name=tc.get("function", {}).get("name", "unknown"),
+                        args=tc.get("function", {}).get("arguments", ""),
+                        id=tc.get("id", "unknown"),
+                        error=f"Failed to parse tool call: {e}",
+                    )
+                    tool_calls.append(invalid_tc)
+
+        additional_kwargs = {"tool_calls": api_tool_calls} if api_tool_calls else {}
         usage = resp.get("usage", {})
         usage_metadata = {
             "input_tokens": usage.get("prompt_tokens"),
@@ -166,6 +228,7 @@ class ChatHeroku(BaseChatModel):
         response_metadata["model_name"] = resp.get("model", self._get_model())
         return AIMessage(
             content=content,
+            tool_calls=tool_calls,  # This is the key fix - properly set tool_calls
             additional_kwargs=additional_kwargs,
             response_metadata=response_metadata,
             usage_metadata=usage_metadata if usage_metadata else None,
@@ -184,7 +247,7 @@ class ChatHeroku(BaseChatModel):
         # This will raise HerokuConfigurationError if invalid
         self._get_config()
 
-    def _build_payload(self, messages: List[BaseMessage], stop: Optional[List[str]] = None) -> Dict[str, Any]:
+    def _build_payload(self, messages: List[BaseMessage], stop: Optional[List[str]] = None, **kwargs: Any) -> Dict[str, Any]:
         """Build the API payload for the chat completion request."""
         payload: Dict[str, Any] = {
             "model": self._get_model(),
@@ -201,10 +264,19 @@ class ChatHeroku(BaseChatModel):
             payload["stop"] = stop
         elif self.stop is not None:
             payload["stop"] = self.stop
-        if self.tools:
-            payload["tools"] = self.tools
-        if self.tool_choice is not None:
+
+        # Handle tools - prioritize kwargs over instance attributes (for bind_tools support)
+        tools = kwargs.get("tools") or self.tools
+        if tools:
+            payload["tools"] = tools
+
+        # Handle tool_choice - prioritize kwargs over instance attributes (for bind_tools support)
+        tool_choice = kwargs.get("tool_choice")
+        if tool_choice is not None:
+            payload["tool_choice"] = tool_choice
+        elif self.tool_choice is not None:
             payload["tool_choice"] = self.tool_choice
+
         if self.streaming:
             payload["stream"] = True
         if self.top_p is not None:
@@ -241,6 +313,9 @@ class ChatHeroku(BaseChatModel):
 
         # Validate message content
         for i, message in enumerate(messages):
+            # Allow empty content for AIMessage if it has tool calls (like OpenAI format)
+            if isinstance(message, AIMessage) and hasattr(message, "tool_calls") and message.tool_calls:
+                continue  # Empty content is valid for AI messages with tool calls
             if not message.content or str(message.content).strip() == "":
                 raise ValueError(f"Message at index {i} cannot have empty content")
 
@@ -250,12 +325,12 @@ class ChatHeroku(BaseChatModel):
                 if not seq or seq.strip() == "":
                     raise ValueError(f"Stop sequence at index {i} cannot be blank")
 
-        payload = self._build_payload(messages, stop)
+        payload = self._build_payload(messages, stop, **kwargs)
         data = self._make_api_request(payload)
         ai_msg = self._api_to_ai_message(data)
         return ChatResult(generations=[ChatGeneration(message=ai_msg)])
 
-    def _build_streaming_payload(self, messages: List[BaseMessage], stop: Optional[List[str]] = None) -> Dict[str, Any]:
+    def _build_streaming_payload(self, messages: List[BaseMessage], stop: Optional[List[str]] = None, **kwargs: Any) -> Dict[str, Any]:
         """Build the API payload for streaming chat completion requests."""
         payload: Dict[str, Any] = {
             "model": self._get_model(),
@@ -272,10 +347,19 @@ class ChatHeroku(BaseChatModel):
             payload["stop"] = stop
         elif self.stop is not None:
             payload["stop"] = self.stop
-        if self.tools:
-            payload["tools"] = self.tools
-        if self.tool_choice is not None:
+
+        # Handle tools - prioritize kwargs over instance attributes (for bind_tools support)
+        tools = kwargs.get("tools") or self.tools
+        if tools:
+            payload["tools"] = tools
+
+        # Handle tool_choice - prioritize kwargs over instance attributes (for bind_tools support)
+        tool_choice = kwargs.get("tool_choice")
+        if tool_choice is not None:
+            payload["tool_choice"] = tool_choice
+        elif self.tool_choice is not None:
             payload["tool_choice"] = self.tool_choice
+
         if self.top_p is not None:
             payload["top_p"] = self.top_p
         if self.extended_thinking is not None:
@@ -286,7 +370,7 @@ class ChatHeroku(BaseChatModel):
     def _make_streaming_request(self, payload: Dict[str, Any]) -> sseclient.SSEClient:
         """Make the streaming API request with retry logic."""
         config = self._get_config()
-        return HerokuHTTPClient.make_streaming_request(
+        return HerokuHTTPClient.make_streaming_request(  # type: ignore[no-any-return]
             url=config.inference_url,
             endpoint="v1/chat/completions",
             payload=payload,
@@ -337,7 +421,7 @@ class ChatHeroku(BaseChatModel):
         """Stream chat completions with enhanced error handling and resource management."""
         try:
             self._validate_config()
-            payload = self._build_streaming_payload(messages, stop)
+            payload = self._build_streaming_payload(messages, stop, **kwargs)
         except Exception as e:
             if run_manager:
                 run_manager.on_llm_error(e)

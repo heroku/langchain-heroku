@@ -4,7 +4,7 @@ from typing import List, Type
 from unittest.mock import MagicMock, patch
 
 import pytest
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel
 
 from langchain_heroku.chat_models import ChatHeroku
@@ -241,7 +241,6 @@ def test_chat_heroku_message_types() -> None:
         FunctionMessage,
         HumanMessage,
         SystemMessage,
-        ToolMessage,
     )
 
     llm = ChatHeroku(model="bird-brain-001", temperature=0)
@@ -763,6 +762,54 @@ def test_create_schema_from_annotations_no_annotations() -> None:
     expected_schema = {"type": "object", "properties": {}, "required": []}
 
     assert schema == expected_schema
+
+
+def test_ai_message_empty_content_with_tool_calls() -> None:
+    """Test that AIMessage with empty content but tool calls is allowed."""
+    from langchain_core.messages.tool import tool_call
+
+    # Create an AIMessage with empty content but with tool calls (like OpenAI format)
+    tool_calls = [tool_call(name="get_weather", args={"location": "Boston"}, id="call_123")]
+    ai_message = AIMessage(content="", tool_calls=tool_calls)
+
+    chat = ChatHeroku(model="bird-brain-001", inference_url="https://test.com", api_key="test-key")
+
+    # This should not raise an error - empty content is valid for AI messages with tool calls
+    messages = [HumanMessage(content="What's the weather?"), ai_message]
+
+    # Mock the API request to avoid actual network calls
+    with patch.object(chat, "_make_api_request") as mock_request:
+        mock_request.return_value = {
+            "id": "chatcmpl-123",
+            "object": "chat.completion",
+            "created": 1677652288,
+            "model": "bird-brain-001",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "Response"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        }
+
+        # This should not raise ValueError about empty content
+        try:
+            chat._generate(messages)
+        except ValueError as e:
+            if "empty content" in str(e):
+                pytest.fail(f"Should allow empty content for AI messages with tool calls: {e}")
+            else:
+                # Re-raise other ValueErrors
+                raise
+
+
+def test_ai_message_empty_content_without_tool_calls() -> None:
+    """Test that AIMessage with empty content and no tool calls raises error."""
+    # Create an AIMessage with empty content and no tool calls
+    ai_message = AIMessage(content="")
+
+    chat = ChatHeroku(model="bird-brain-001", inference_url="https://test.com", api_key="test-key")
+    messages = [HumanMessage(content="Hello"), ai_message]
+
+    # This should raise an error - empty content is not valid without tool calls
+    with pytest.raises(ValueError, match="cannot have empty content"):
+        chat._generate(messages)
 
 
 if __name__ == "__main__":

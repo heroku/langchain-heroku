@@ -21,6 +21,7 @@ from langchain_core.messages import (
     AIMessage,
     HumanMessage,
     SystemMessage,
+    ToolMessage,
 )
 
 # Load dotenv if available
@@ -255,6 +256,163 @@ class TestChatHerokuIntegration:
             # If no tool calls, at least ensure we got a response
             assert result.content is not None
             assert len(result.content) > 0
+
+    def test_bind_tools_functionality(self) -> None:
+        """Test bind_tools method with proper tool call format.
+
+        This test validates that ChatHeroku properly supports the bind_tools()
+        method and returns tool calls in the correct LangChain format.
+        """
+        # Skip if tool calling is not supported
+        if not self.tool_calling_supported:
+            pytest.skip("Tool calling not supported by this model")
+
+        from langchain_core.tools import tool
+
+        @tool
+        def get_temperature(location: str) -> str:
+            """Get the temperature for a location."""
+            return f"The temperature in {location} is 72°F"
+
+        # Test with bind_tools method
+        chat = ChatHeroku()
+        bound_chat = chat.bind_tools([get_temperature], tool_choice="required")
+
+        messages = [HumanMessage(content="What's the temperature in Boston?")]
+        result = bound_chat.invoke(messages)
+
+        # Verify tool calls are properly formatted
+        assert hasattr(result, "tool_calls"), "AIMessage should have tool_calls attribute"
+        assert len(result.tool_calls) > 0, "Should have at least one tool call"
+
+        # Verify tool call structure matches LangChain format
+        tool_call = result.tool_calls[0]
+        assert "name" in tool_call, "Tool call should have 'name' field"
+        assert "args" in tool_call, "Tool call should have 'args' field"
+        assert "id" in tool_call, "Tool call should have 'id' field"
+        assert "type" in tool_call, "Tool call should have 'type' field"
+
+        # Verify tool call details
+        assert tool_call["name"] == "get_temperature"
+        assert isinstance(tool_call["args"], dict)
+        assert "location" in tool_call["args"]
+
+    def test_tool_message_handling(self) -> None:
+        """Test ToolMessage handling and API format conversion.
+
+        This test validates that ChatHeroku can properly handle ToolMessage
+        objects and convert them to the correct API format.
+        """
+        # Skip if tool calling is not supported
+        if not self.tool_calling_supported:
+            pytest.skip("Tool calling not supported by this model")
+
+        from langchain_core.tools import tool
+
+        @tool
+        def calculate_sum(a: int, b: int) -> str:
+            """Calculate the sum of two numbers."""
+            return f"The sum of {a} and {b} is {a + b}"
+
+        chat = ChatHeroku()
+        bound_chat = chat.bind_tools([calculate_sum], tool_choice="required")
+
+        # Step 1: Get AI response with tool call
+        user_msg = HumanMessage(content="What is 15 + 27?")
+        ai_response = bound_chat.invoke([user_msg])
+
+        assert hasattr(ai_response, "tool_calls")
+        assert len(ai_response.tool_calls) > 0
+
+        # Step 2: Create ToolMessage
+        tool_call = ai_response.tool_calls[0]
+        tool_result = calculate_sum.invoke(tool_call["args"])
+        tool_msg = ToolMessage(content=tool_result, tool_call_id=tool_call["id"])
+
+        # Step 3: Test API format conversion
+        conversation = [user_msg, ai_response, tool_msg]
+        api_messages = chat._messages_to_api(conversation)
+
+        # Verify API format
+        assert len(api_messages) == 3
+
+        # Check user message
+        assert api_messages[0]["role"] == "user"
+        assert api_messages[0]["content"] == "What is 15 + 27?"
+
+        # Check AI message with tool calls
+        assert api_messages[1]["role"] == "assistant"
+        assert "tool_calls" in api_messages[1]
+        assert len(api_messages[1]["tool_calls"]) > 0
+
+        # Check tool call structure in API format
+        api_tool_call = api_messages[1]["tool_calls"][0]
+        assert "id" in api_tool_call
+        assert "type" in api_tool_call
+        assert api_tool_call["type"] == "function"
+        assert "function" in api_tool_call
+        assert "name" in api_tool_call["function"]
+        assert "arguments" in api_tool_call["function"]
+
+        # Check tool message
+        assert api_messages[2]["role"] == "tool"
+        assert api_messages[2]["content"] == tool_result
+        assert api_messages[2]["tool_call_id"] == tool_call["id"]
+
+    def test_openai_compatibility_format(self) -> None:
+        """Test that ChatHeroku produces OpenAI-compatible message format.
+
+        This test ensures that the message flow matches the OpenAI format
+        exactly, as shown in the messages.txt example.
+        """
+        # Skip if tool calling is not supported
+        if not self.tool_calling_supported:
+            pytest.skip("Tool calling not supported by this model")
+
+        from langchain_core.tools import tool
+
+        @tool
+        def get_current_weather(location: str) -> str:
+            """Get the current weather in a given location."""
+            return f"The weather in {location} is sunny and 75°F"
+
+        # Test the complete OpenAI-style workflow
+        chat = ChatHeroku()
+        bound_chat = chat.bind_tools([get_current_weather], tool_choice="required")
+
+        # Human message
+        human_msg = HumanMessage(content="What's the weather like in San Francisco?")
+
+        # AI response with tool calls
+        ai_response = bound_chat.invoke([human_msg])
+
+        # Verify AI message structure (like OpenAI)
+        assert hasattr(ai_response, "tool_calls")
+        assert len(ai_response.tool_calls) > 0
+
+        tool_call = ai_response.tool_calls[0]
+        assert tool_call["name"] == "get_current_weather"
+        assert "location" in tool_call["args"]
+        assert tool_call["args"]["location"].lower() == "san francisco"
+
+        # Execute tool and create tool message
+        tool_result = get_current_weather.invoke(tool_call["args"])
+        tool_msg = ToolMessage(content=tool_result, tool_call_id=tool_call["id"])
+
+        # Verify tool message matches OpenAI format
+        assert tool_msg.content == tool_result
+        assert tool_msg.tool_call_id == tool_call["id"]
+
+        # Verify the complete conversation format matches OpenAI
+        conversation = [human_msg, ai_response, tool_msg]
+        api_messages = chat._messages_to_api(conversation)
+
+        # Verify the API format matches OpenAI structure
+        assert len(api_messages) == 3
+        assert api_messages[0]["role"] == "user"
+        assert api_messages[1]["role"] == "assistant"
+        assert api_messages[2]["role"] == "tool"
+        assert api_messages[2]["tool_call_id"] == tool_call["id"]
 
     def test_production_performance_benchmark(self) -> None:
         """Test performance characteristics against production endpoint.

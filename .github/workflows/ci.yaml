@@ -36,8 +36,8 @@ jobs:
           restore-keys: |
             venv-${{ runner.os }}-
 
-      - name: Install dependencies (including test, lint, and typing)
-        run: poetry install --with test,lint,typing
+      - name: Install dependencies (including test, lint, typing, and test_integration)
+        run: poetry install --with test,lint,typing,test_integration
 
       - name: Run linting checks
         run: |
@@ -88,8 +88,8 @@ jobs:
           restore-keys: |
             venv-${{ runner.os }}-
 
-      - name: Install dependencies (including test, lint, and typing)
-        run: poetry install --with test,lint,typing
+      - name: Install dependencies (including test, lint, typing, and test_integration)
+        run: poetry install --with test,lint,typing,test_integration
 
       - name: Run integration tests
         env:
