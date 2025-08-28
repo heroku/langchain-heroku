@@ -235,6 +235,22 @@ class ChatHeroku(BaseChatModel):
         **kwargs: Any,
     ) -> ChatResult:
         self._validate_config()
+
+        # Validate input messages
+        if not messages:
+            raise ValueError("Messages list cannot be empty")
+
+        # Validate message content
+        for i, message in enumerate(messages):
+            if not message.content or str(message.content).strip() == "":
+                raise ValueError(f"Message at index {i} cannot have empty content")
+
+        # Validate stop sequences (ensure they're not blank)
+        if stop:
+            for i, seq in enumerate(stop):
+                if not seq or seq.strip() == "":
+                    raise ValueError(f"Stop sequence at index {i} cannot be blank")
+
         payload = self._build_payload(messages, stop)
         data = self._make_api_request(payload)
         ai_msg = self._api_to_ai_message(data)
@@ -350,7 +366,7 @@ class ChatHeroku(BaseChatModel):
                             response_metadata={"model_name": response_metadata.get("model", self._get_model())} if response_metadata else {},
                         )
                         chunk = ChatGenerationChunk(message=ai_msg_chunk)
-                        if run_manager:
+                        if run_manager and content:
                             run_manager.on_llm_new_token(content, chunk=chunk)
                         yield chunk
                 except Exception as e:

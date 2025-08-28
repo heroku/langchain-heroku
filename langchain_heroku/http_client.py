@@ -47,9 +47,18 @@ class HerokuHTTPClient:
         request_id = response.headers.get("x-request-id") or response.headers.get("request-id")
 
         try:
-            error_data = response.json()
+            parsed_response = response.json()
+            # Ensure error_data is a dictionary
+            if isinstance(parsed_response, dict):
+                error_data = parsed_response
+            else:
+                error_data = {"raw_response": str(parsed_response)}
         except Exception:
             error_data = {"raw_response": response.text}
+
+        # Ensure error_data is always a dictionary
+        if not isinstance(error_data, dict):
+            error_data = {"raw_response": str(error_data)}
 
         if response.status_code == 400:
             message = "Bad request. Check your request parameters."
@@ -75,7 +84,10 @@ class HerokuHTTPClient:
                 message = error_data["error"]["message"]
             raise HerokuAPIError(message, status_code=response.status_code, response_data=error_data, request_id=request_id, endpoint=endpoint)
         elif response.status_code >= 400:
-            message = error_data.get("error", {}).get("message", f"HTTP {response.status_code}: {response.text}")
+            if error_data.get("error", {}).get("message"):
+                message = error_data["error"]["message"]
+            else:
+                message = f"HTTP {response.status_code}: {response.text}"
             raise HerokuAPIError(message, status_code=response.status_code, response_data=error_data, request_id=request_id, endpoint=endpoint)
 
     @staticmethod
@@ -117,7 +129,10 @@ class HerokuHTTPClient:
                 if should_break:
                     break
 
-            except (httpx.RequestError, HerokuAPIError) as e:
+            except (
+                httpx.RequestError, HerokuAPIError, HerokuAuthenticationError, 
+                HerokuRateLimitError, HerokuValidationError, HerokuTimeoutError
+            ) as e:
                 last_exception = e
                 should_break = (attempt == max_retries) or isinstance(e, (HerokuAuthenticationError, HerokuRateLimitError))
                 if should_break:
@@ -167,21 +182,22 @@ class HerokuHTTPClient:
         for attempt in range(retry_count):
             try:
                 # Use streaming request for better memory management
-                client = http_client(timeout=timeout).__enter__()
-                try:
+                with http_client(timeout=timeout) as client:
                     response = client.post(full_url, json=payload, headers=headers)
                     HerokuHTTPClient._handle_http_error(response, endpoint)
 
                     # Create a custom SSE client with better resource management
                     class ManagedSSEClient:
-                        def __init__(self, response: httpx.Response, client_context: Any):
+                        def __init__(self, response: httpx.Response):
                             self.response = response
-                            self.client_context = client_context
                             self._closed = False
 
                         def events(self) -> Generator[sseclient.Event, None, None]:
                             """Generator that yields SSE events with proper error handling."""
                             try:
+                                current_event_type = None
+                                current_data = None
+
                                 for line in self.response.iter_lines():
                                     if self._closed:
                                         break
@@ -190,20 +206,26 @@ class HerokuHTTPClient:
                                     if not line:
                                         continue
 
-                                    # Parse SSE format: "data: {json}"
-                                    if line.startswith("data: "):
-                                        data = line[6:]  # Remove "data: " prefix
-                                        # Create a simple event object with data
-                                        event = sseclient.Event()
-                                        event.data = data
-                                        yield event
-                                    elif line.startswith("event: "):
-                                        # Handle event type if needed
-                                        continue
-                                    elif line.startswith("id: "):
+                                    # Parse SSE format: "event: type" followed by "data: content"
+                                    if line.startswith("event:"):
+                                        current_event_type = line[6:].strip()
+                                    elif line.startswith("data:"):
+                                        current_data = line[5:].strip()
+
+                                        # Create and yield the event if we have both type and data
+                                        if current_event_type and current_data:
+                                            event = sseclient.Event()
+                                            event.data = current_data
+                                            event.event = current_event_type
+                                            yield event
+
+                                            # Reset for next event
+                                            current_event_type = None
+                                            current_data = None
+                                    elif line.startswith("id:"):
                                         # Handle event ID if needed
                                         continue
-                                    elif line.startswith("retry: "):
+                                    elif line.startswith("retry:"):
                                         # Handle retry instruction if needed
                                         continue
                             except Exception as e:
@@ -220,19 +242,8 @@ class HerokuHTTPClient:
                                     self.response.close()
                                 except Exception:
                                     pass  # Ignore errors during cleanup
-                                try:
-                                    self.client_context.__exit__(None, None, None)
-                                except Exception:
-                                    pass  # Ignore errors during cleanup
 
-                    return ManagedSSEClient(response, client)
-                except Exception:
-                    # Ensure client is closed if exception occurs
-                    try:
-                        client.__exit__(None, None, None)
-                    except Exception:
-                        pass
-                    raise
+                    return ManagedSSEClient(response)
 
             except httpx.TimeoutException:
                 last_exception = HerokuTimeoutError(f"Streaming request timeout after {timeout}s")

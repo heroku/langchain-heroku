@@ -158,6 +158,10 @@ class HerokuEmbeddings(Embeddings):
     def _extract_embeddings(self, response: dict) -> List[List[float]]:
         """Extract embeddings from the API response."""
         try:
+            # Ensure response is a dictionary
+            if not isinstance(response, dict):
+                raise ValueError(f"Expected dictionary response, got {type(response)}: {response}")
+
             data = response.get("data", [])
 
             # Check if data is empty
@@ -250,6 +254,10 @@ class HerokuEmbeddings(Embeddings):
 
         payload = self._build_payload(texts)
         response = self._make_api_request(payload)
+
+        # Ensure response is a dictionary
+        if not isinstance(response, dict):
+            raise ValueError(f"Expected dictionary response, got {type(response)}: {response}")
 
         embeddings = self._extract_embeddings(response)
         if len(embeddings) != len(texts):
