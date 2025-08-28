@@ -17,7 +17,6 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
-from langchain_core.output_parsers.openai_tools import JsonOutputKeyToolsParser
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
@@ -463,7 +462,7 @@ class ChatHeroku(BaseChatModel):
         """
         # Convert schema to tool format
         tool_name = "extract_data"
-        tool_description = "Extract structured data from the input"
+        tool_description = "Extract structured data from the input according to the specified schema"
 
         if isinstance(schema, dict):
             # Already a JSON schema
@@ -480,8 +479,18 @@ class ChatHeroku(BaseChatModel):
         # Create the tool definition
         structured_tool = {"type": "function", "function": {"name": tool_name, "description": tool_description, "parameters": tool_schema}}
 
-        # Create a model instance bound with the tool
-        tool_model = self.bind_tools([structured_tool], tool_choice=tool_name)
+        # Create a model instance with tools directly bound
+        # Since bind_tools isn't working properly, we'll create a new instance with tools
+        tool_model = ChatHeroku(
+            inference_url=self.inference_url,
+            api_key=self.api_key,
+            model=self.model,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            top_p=self.top_p,
+            tools=[structured_tool],
+            tool_choice=tool_name,
+        )
 
         # Create the parser
         if include_raw:
@@ -491,13 +500,88 @@ class ChatHeroku(BaseChatModel):
                     raise ValueError("No tool calls found in response")
 
                 tool_call = ai_message.tool_calls[0]
-                return {"raw": ai_message, "parsed": tool_call["args"]}
+                parsed_data = self._parse_tool_call_args(tool_call, schema)
+                return {"raw": ai_message, "parsed": parsed_data}
 
             return tool_model | parse_output
         else:
-            # Use the built-in parser to extract just the tool arguments
-            parser = JsonOutputKeyToolsParser(key_name=tool_name)
-            return tool_model | parser
+            # Use custom parser to extract and validate the tool arguments
+            def parse_and_validate(ai_message: AIMessage) -> Any:
+                if not ai_message.tool_calls:
+                    raise ValueError("No tool calls found in response")
+
+                tool_call = ai_message.tool_calls[0]
+                return self._parse_tool_call_args(tool_call, schema)
+
+            return tool_model | parse_and_validate
+
+    def _parse_tool_call_args(self, tool_call: Any, schema: Union[Dict[str, Any], Type[BaseModel], Type]) -> Any:
+        """Parse tool call arguments and validate against schema.
+
+        This method handles the parsing of tool call arguments and validates them
+        against the provided schema, similar to the TypeScript implementation.
+        """
+        try:
+            # Extract arguments from tool call
+            if "function" in tool_call and "arguments" in tool_call["function"]:
+                args = tool_call["function"]["arguments"]
+            elif "args" in tool_call:
+                args = tool_call["args"]
+            else:
+                raise ValueError("No arguments found in tool call")
+
+            # Parse arguments if they're a string, otherwise use as-is
+            if isinstance(args, str):
+                import json
+
+                parsed_args = json.loads(args)
+            else:
+                parsed_args = args
+
+            # Validate against schema
+            if hasattr(schema, "model_validate"):
+                # Pydantic v2
+                return schema.model_validate(parsed_args)
+            elif hasattr(schema, "parse_obj"):
+                # Pydantic v1
+                return schema.parse_obj(parsed_args)
+            elif isinstance(schema, dict):
+                # Dictionary schema - basic validation
+                self._validate_dict_schema(parsed_args, schema)
+                return parsed_args
+            else:
+                # For other types, return as-is
+                return parsed_args
+
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Failed to parse tool call arguments as JSON: {e}")
+        except Exception as e:
+            raise ValueError(f"Failed to parse or validate tool call arguments: {e}")
+
+    def _validate_dict_schema(self, data: Dict[str, Any], schema: Dict[str, Any]) -> None:
+        """Basic validation of data against a dictionary schema."""
+        if not isinstance(data, dict):
+            raise ValueError(f"Expected dict, got {type(data)}")
+
+        # Check required fields
+        required = schema.get("required", [])
+        for field in required:
+            if field not in data:
+                raise ValueError(f"Required field '{field}' missing from data")
+
+        # Check field types (basic validation)
+        properties = schema.get("properties", {})
+        for field_name, field_value in data.items():
+            if field_name in properties:
+                expected_type = properties[field_name].get("type")
+                if expected_type == "string" and not isinstance(field_value, str):
+                    raise ValueError(f"Field '{field_name}' expected string, got {type(field_value)}")
+                elif expected_type == "integer" and not isinstance(field_value, int):
+                    raise ValueError(f"Field '{field_name}' expected integer, got {type(field_value)}")
+                elif expected_type == "number" and not isinstance(field_value, (int, float)):
+                    raise ValueError(f"Field '{field_name}' expected number, got {type(field_value)}")
+                elif expected_type == "boolean" and not isinstance(field_value, bool):
+                    raise ValueError(f"Field '{field_name}' expected boolean, got {type(field_value)}")
 
     def _create_schema_from_annotations(self, cls: Type) -> Dict[str, Any]:
         """Create a basic JSON schema from type annotations."""

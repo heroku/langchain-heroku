@@ -117,7 +117,17 @@ class HerokuHTTPClient:
                 with http_client(timeout=timeout) as client:
                     response = client.post(full_url, json=payload, headers=headers)
                     HerokuHTTPClient._handle_http_error(response, endpoint)
-                    return response.json()
+
+                    # Safely parse JSON response
+                    try:
+                        return response.json()
+                    except ValueError:
+                        # If JSON parsing fails, check if it's an error response
+                        error_text = response.text.strip()
+                        if error_text:
+                            raise HerokuAPIError(f"Invalid JSON response: {error_text}", endpoint=endpoint)
+                        else:
+                            raise HerokuAPIError("Empty response from API", endpoint=endpoint)
 
             except httpx.TimeoutException:
                 last_exception = HerokuTimeoutError(f"Request timeout after {timeout}s")
@@ -130,8 +140,12 @@ class HerokuHTTPClient:
                     break
 
             except (
-                httpx.RequestError, HerokuAPIError, HerokuAuthenticationError, 
-                HerokuRateLimitError, HerokuValidationError, HerokuTimeoutError
+                httpx.RequestError,
+                HerokuAPIError,
+                HerokuAuthenticationError,
+                HerokuRateLimitError,
+                HerokuValidationError,
+                HerokuTimeoutError,
             ) as e:
                 last_exception = e
                 should_break = (attempt == max_retries) or isinstance(e, (HerokuAuthenticationError, HerokuRateLimitError))
