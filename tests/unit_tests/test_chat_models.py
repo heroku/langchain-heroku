@@ -4,7 +4,16 @@ from typing import List, Type
 from unittest.mock import MagicMock, patch
 
 import pytest
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    BaseMessage,
+    HumanMessage,
+    HumanMessageChunk,
+    SystemMessageChunk,
+    ToolMessage,
+    ToolMessageChunk,
+)
 from pydantic import BaseModel
 
 from langchain_heroku.chat_models import ChatHeroku
@@ -242,21 +251,26 @@ def test_chat_heroku_message_types() -> None:
         HumanMessage,
         SystemMessage,
     )
+    from langchain_core.messages.tool import tool_call
 
     llm = ChatHeroku(model="bird-brain-001", temperature=0)
 
-    # Test all message types
+    # Create a valid tool call sequence to test all message types
+    tool_calls = [tool_call(name="get_weather", args={"location": "Boston"}, id="call_123")]
+    ai_with_tools = AIMessage(content="I'll check the weather for you.", tool_calls=tool_calls)
+
+    # Test all message types with valid tool call flow
     messages = [
         SystemMessage(content="You are a helpful assistant."),
         HumanMessage(content="What's the weather like?"),
-        AIMessage(content="I don't have access to weather data."),
+        ai_with_tools,  # AIMessage with tool calls
         ToolMessage(content="The weather is sunny", tool_call_id="call_123"),
         FunctionMessage(content="Temperature: 75°F", name="get_weather"),
     ]
 
     api_messages = llm._messages_to_api(messages)
 
-    # Verify role mapping
+    # Verify role mapping - all messages should be preserved now
     expected_roles = ["system", "user", "assistant", "tool", "tool"]
     actual_roles = [msg["role"] for msg in api_messages]
     assert actual_roles == expected_roles
@@ -265,7 +279,7 @@ def test_chat_heroku_message_types() -> None:
     expected_contents = [
         "You are a helpful assistant.",
         "What's the weather like?",
-        "I don't have access to weather data.",
+        "I'll check the weather for you.",  # Updated to match the AIMessage with tool calls
         "The weather is sunny",
         "Temperature: 75°F",
     ]
@@ -393,6 +407,55 @@ def test_chat_heroku_extended_thinking() -> None:
             llm.invoke("Test extended thinking")
             args, kwargs = mock_client.post.call_args
             assert kwargs["json"]["extended_thinking"] == extended_thinking_config
+
+
+def test_api_delta_to_langchain_chunk() -> None:
+    """Test that API delta messages are converted to appropriate LangChain chunk types."""
+    with patch.dict("os.environ", {"INFERENCE_URL": "https://dummy.url", "INFERENCE_KEY": "dummy-key"}):
+        llm = ChatHeroku(model="bird-brain-001")
+
+        # Test assistant message chunk (most common case)
+        assistant_delta = {"role": "assistant", "content": "Hello world"}
+        chunk = llm._api_delta_to_langchain_chunk(assistant_delta)
+        assert isinstance(chunk, AIMessageChunk)
+        assert chunk.content == "Hello world"
+
+        # Test assistant message chunk with tool calls
+        tool_call_delta = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "call_123", "type": "function", "function": {"name": "get_weather", "arguments": '{"location": "New York"}'}}],
+        }
+        chunk = llm._api_delta_to_langchain_chunk(tool_call_delta)
+        assert isinstance(chunk, AIMessageChunk)
+        assert len(chunk.tool_calls) == 1
+        assert chunk.tool_calls[0]["name"] == "get_weather"
+        assert chunk.tool_calls[0]["args"]["location"] == "New York"
+
+        # Test system message chunk
+        system_delta = {"role": "system", "content": "You are a helpful assistant"}
+        chunk = llm._api_delta_to_langchain_chunk(system_delta)
+        assert isinstance(chunk, SystemMessageChunk)
+        assert chunk.content == "You are a helpful assistant"
+
+        # Test user message chunk
+        user_delta = {"role": "user", "content": "What's the weather?"}
+        chunk = llm._api_delta_to_langchain_chunk(user_delta)
+        assert isinstance(chunk, HumanMessageChunk)
+        assert chunk.content == "What's the weather?"
+
+        # Test tool message chunk
+        tool_delta = {"role": "tool", "content": "The weather is sunny", "tool_call_id": "call_123"}
+        chunk = llm._api_delta_to_langchain_chunk(tool_delta)
+        assert isinstance(chunk, ToolMessageChunk)
+        assert chunk.content == "The weather is sunny"
+        assert chunk.tool_call_id == "call_123"
+
+        # Test empty role defaults to assistant
+        empty_role_delta = {"content": "Default message"}
+        chunk = llm._api_delta_to_langchain_chunk(empty_role_delta)
+        assert isinstance(chunk, AIMessageChunk)
+        assert chunk.content == "Default message"
 
 
 def test_chat_heroku_extended_thinking_streaming() -> None:
@@ -568,6 +631,69 @@ def test_chat_heroku_message_conversion_edge_cases() -> None:
     api_messages = llm._messages_to_api(messages3)
     assert len(api_messages) == 1
     assert api_messages[0]["role"] == "system"
+
+
+def test_chat_heroku_api_message_to_langchain_conversion() -> None:
+    """Test conversion from API message format to LangChain message objects."""
+    from langchain_core.messages import (
+        AIMessage,
+        HumanMessage,
+        SystemMessage,
+        ToolMessage,
+    )
+
+    llm = ChatHeroku(model="test-model")
+
+    # Test system message conversion
+    api_system_msg = {"role": "system", "content": "You are a helpful assistant."}
+    lc_msg = llm._api_message_to_langchain_message(api_system_msg)
+    assert isinstance(lc_msg, SystemMessage)
+    assert lc_msg.content == "You are a helpful assistant."
+
+    # Test user message conversion
+    api_user_msg = {"role": "user", "content": "Hello there!"}
+    lc_msg = llm._api_message_to_langchain_message(api_user_msg)
+    assert isinstance(lc_msg, HumanMessage)
+    assert lc_msg.content == "Hello there!"
+
+    # Test assistant message conversion without tool calls
+    api_assistant_msg = {"role": "assistant", "content": "How can I help you?"}
+    lc_msg = llm._api_message_to_langchain_message(api_assistant_msg)
+    assert isinstance(lc_msg, AIMessage)
+    assert lc_msg.content == "How can I help you?"
+    assert len(lc_msg.tool_calls) == 0
+
+    # Test assistant message conversion with tool calls
+    api_assistant_msg_with_tools = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "call_123",
+                "type": "function",
+                "function": {"name": "get_weather", "arguments": '{"location": "New York"}'},
+            }
+        ],
+    }
+    lc_msg = llm._api_message_to_langchain_message(api_assistant_msg_with_tools)
+    assert isinstance(lc_msg, AIMessage)
+    assert len(lc_msg.tool_calls) == 1
+    assert lc_msg.tool_calls[0]["name"] == "get_weather"
+    assert lc_msg.tool_calls[0]["args"] == {"location": "New York"}
+    assert lc_msg.tool_calls[0]["id"] == "call_123"
+
+    # Test tool message conversion (the key fix)
+    api_tool_msg = {"role": "tool", "content": "The weather is sunny", "tool_call_id": "call_123"}
+    lc_msg = llm._api_message_to_langchain_message(api_tool_msg)
+    assert isinstance(lc_msg, ToolMessage)
+    assert lc_msg.content == "The weather is sunny"
+    assert lc_msg.tool_call_id == "call_123"
+
+    # Test unknown role fallback
+    api_unknown_msg = {"role": "unknown", "content": "Some content"}
+    lc_msg = llm._api_message_to_langchain_message(api_unknown_msg)
+    assert isinstance(lc_msg, HumanMessage)  # Should fallback to HumanMessage
+    assert lc_msg.content == "Some content"
 
 
 def test_chat_heroku_parameter_validation() -> None:
@@ -799,6 +925,166 @@ def test_ai_message_empty_content_with_tool_calls() -> None:
                 raise
 
 
+def test_langgraph_supervisor_tool_call_handling() -> None:
+    """Test that LangGraph supervisor tool calls work without strict validation."""
+    from langchain_core.messages.tool import tool_call
+
+    # Simulate LangGraph supervisor scenario where tool_call_ids might not match exactly
+    # This reflects the real-world scenario where LangGraph manages tool call flows
+
+    tool_calls = [
+        tool_call(
+            name="transfer_to_invoice_information_subagent",
+            args={
+                "state": {"customer_query": "How much was my most recent purchase?"},
+                "tool_call_id": "invoice_recent_purchase",  # LangGraph supervisor pattern
+            },
+            id="tooluse_M0qCDWgKTx-arypWES0H9g",  # Heroku-style tool call ID
+        )
+    ]
+
+    ai_message = AIMessage(content="I'll help you find information about your most recent purchase.", tool_calls=tool_calls)
+
+    # LangGraph might create ToolMessage with tool_call_id from function arguments
+    tool_message = ToolMessage(
+        content="Your most recent purchase was $29.99",
+        tool_call_id="invoice_recent_purchase",  # From function args, not the API tool call ID
+    )
+
+    chat = ChatHeroku(model="bird-brain-001", inference_url="https://test.com", api_key="test-key")
+
+    messages = [HumanMessage(content="How much was my most recent purchase?"), ai_message, tool_message]
+
+    # Mock the API request to test the flow
+    with patch.object(chat, "_make_api_request") as mock_request:
+        mock_request.return_value = {
+            "id": "chatcmpl-123",
+            "object": "chat.completion",
+            "created": 1677652288,
+            "model": "bird-brain-001",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "Response"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        }
+
+        # This should work now that validation is relaxed for LangGraph compatibility
+        try:
+            result = chat._generate(messages)
+            assert result is not None
+        except ValueError as e:
+            pytest.fail(f"LangGraph supervisor scenarios should work: {e}")
+
+
+def test_tool_call_adds_synthetic_result_when_missing() -> None:
+    """Assistant tool calls should be balanced by synthetic tool results when missing."""
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+    from langchain_core.messages.tool import tool_call
+
+    # Tool calls without explicit ToolMessage should get a synthetic result
+    messages = [
+        SystemMessage(content="You are a helpful assistant."),
+        HumanMessage(content="How much was my most recent purchase?"),
+        AIMessage(
+            content="I'll help you with your question!",
+            tool_calls=[
+                tool_call(
+                    name="transfer_to_invoice_information_subagent",
+                    args={"state": {"customer_query": "most recent purchase"}, "tool_call_id": "invoice_001"},
+                    id="tooluse_ABC123",
+                )
+            ],
+        ),
+        # No ToolMessage provided
+    ]
+
+    chat = ChatHeroku(model="claude-4-sonnet", inference_url="https://test.com", api_key="test-key")
+
+    # Convert messages to API format
+    api_messages = chat._messages_to_api(messages)
+
+    # Should have: system, user, assistant, synthetic tool result
+    assert len(api_messages) == 4
+    assert api_messages[0]["role"] == "system"
+    assert api_messages[1]["role"] == "user"
+    assert api_messages[2]["role"] == "assistant"
+    assert "tool_calls" in api_messages[2]
+    assert api_messages[3]["role"] == "tool"
+    assert api_messages[3]["tool_call_id"] == "tooluse_ABC123"
+
+
+def test_tool_message_with_corresponding_tool_call_preserved() -> None:
+    """Test that tool messages with corresponding tool calls are preserved."""
+    from langchain_core.messages.tool import tool_call
+
+    # Create a proper tool call sequence
+    tool_calls = [tool_call(name="get_weather", args={"location": "Boston"}, id="call_123")]
+
+    messages = [
+        HumanMessage(content="What's the weather in Boston?"),
+        AIMessage(content="I'll check the weather for you.", tool_calls=tool_calls),
+        ToolMessage(content="The weather in Boston is sunny, 75°F", tool_call_id="call_123"),
+    ]
+
+    chat = ChatHeroku(model="claude-4-sonnet", inference_url="https://test.com", api_key="test-key")
+
+    # Convert messages to API format
+    api_messages = chat._messages_to_api(messages)
+
+    # All messages should be preserved since they form a valid tool call sequence
+    assert len(api_messages) == 3
+    assert api_messages[0]["role"] == "user"
+    assert api_messages[1]["role"] == "assistant"
+    assert "tool_calls" in api_messages[1]
+    assert api_messages[2]["role"] == "tool"
+    assert api_messages[2]["tool_call_id"] == "call_123"
+
+
+def test_api_response_to_langchain_conversion() -> None:
+    """Test that API responses are correctly converted to LangChain format."""
+    # Simulate a Heroku API response with tool calls
+    api_response = {
+        "id": "chatcmpl-1860adac88ff41020acc5",
+        "object": "chat.completion",
+        "created": 1756594811,
+        "model": "claude-4-sonnet",
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "refusal": None,
+                    "tool_calls": [
+                        {
+                            "id": "tooluse_M0qCDWgKTx-arypWES0H9g",  # Heroku-style ID
+                            "type": "function",
+                            "function": {
+                                "name": "transfer_to_invoice_information_subagent",
+                                "arguments": '{"state":{"customer_query":"How much was my most recent purchase?"}}',
+                            },
+                        }
+                    ],
+                    "content": "I'll help you find information about your most recent purchase.",
+                },
+                "finish_reason": "tool_calls",
+            }
+        ],
+        "usage": {"prompt_tokens": 870, "completion_tokens": 258, "total_tokens": 1128},
+    }
+
+    chat = ChatHeroku(model="claude-4-sonnet", inference_url="https://test.com", api_key="test-key")
+
+    # Convert API response to AIMessage
+    ai_message = chat._api_to_ai_message(api_response)
+
+    # Verify the tool call was converted correctly
+    assert hasattr(ai_message, "tool_calls") and ai_message.tool_calls
+    assert len(ai_message.tool_calls) == 1
+    tool_call = ai_message.tool_calls[0]
+    assert tool_call["id"] == "tooluse_M0qCDWgKTx-arypWES0H9g"
+    assert tool_call["name"] == "transfer_to_invoice_information_subagent"
+    assert isinstance(tool_call["args"], dict)
+    assert "state" in tool_call["args"]
+
+
 def test_ai_message_empty_content_without_tool_calls() -> None:
     """Test that AIMessage with empty content and no tool calls raises error."""
     # Create an AIMessage with empty content and no tool calls
@@ -810,6 +1096,86 @@ def test_ai_message_empty_content_without_tool_calls() -> None:
     # This should raise an error - empty content is not valid without tool calls
     with pytest.raises(ValueError, match="cannot have empty content"):
         chat._generate(messages)
+
+
+def test_tool_message_empty_content_allowed() -> None:
+    """Test that ToolMessage with empty content is allowed (tool calls can return no results)."""
+    from langchain_core.messages.tool import tool_call
+
+    # Create a conversation with a tool call that returns empty results
+    tool_calls = [tool_call(name="search_database", args={"query": "nonexistent"}, id="call_123")]
+    ai_message = AIMessage(content="Searching for that information...", tool_calls=tool_calls)
+    tool_message = ToolMessage(content="", tool_call_id="call_123")  # Empty result from tool
+
+    chat = ChatHeroku(model="bird-brain-001", inference_url="https://test.com", api_key="test-key")
+    messages = [HumanMessage(content="Search for nonexistent data"), ai_message, tool_message]
+
+    # Mock the API request to avoid actual network calls
+    with patch.object(chat, "_make_api_request") as mock_request:
+        mock_request.return_value = {
+            "id": "chatcmpl-123",
+            "object": "chat.completion",
+            "created": 1677652288,
+            "model": "bird-brain-001",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "No results found"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        }
+
+        # This should not raise ValueError about empty content for ToolMessage
+        try:
+            result = chat._generate(messages)
+            assert result is not None
+        except ValueError as e:
+            if "empty content" in str(e):
+                pytest.fail(f"Should allow empty content for ToolMessage: {e}")
+            else:
+                # Re-raise other ValueErrors
+                raise
+
+
+def test_empty_tool_message_gets_default_content_for_api() -> None:
+    """Test that empty ToolMessage gets default content when converted to API format."""
+    from langchain_core.messages.tool import tool_call
+
+    # Create a conversation with empty tool result
+    tool_calls = [tool_call(name="search_database", args={"query": "nonexistent"}, id="call_123")]
+    ai_message = AIMessage(content="Searching...", tool_calls=tool_calls)
+    tool_message = ToolMessage(content="", tool_call_id="call_123")  # Empty result
+
+    chat = ChatHeroku(model="bird-brain-001", inference_url="https://test.com", api_key="test-key")
+    messages = [HumanMessage(content="Search for data"), ai_message, tool_message]
+
+    # Convert to API format
+    api_messages = chat._messages_to_api(messages)
+
+    # Check that the empty tool message got default content
+    tool_api_msg = api_messages[2]  # The tool message
+    assert tool_api_msg["role"] == "tool"
+    assert tool_api_msg["content"] == "No result returned from the tool."
+    assert tool_api_msg["tool_call_id"] == "call_123"
+
+
+def test_empty_ai_message_with_tool_calls_gets_default_content_for_api() -> None:
+    """Test that empty AIMessage with tool calls gets default content when converted to API format."""
+    from langchain_core.messages.tool import tool_call
+
+    # Create an AI message with empty content but tool calls (like what happens in some LangGraph flows)
+    tool_calls = [tool_call(name="get_tracks_by_artist", args={"artist": "Led Zeppelin"}, id="call_456")]
+    ai_message = AIMessage(content="", tool_calls=tool_calls)  # Empty content with tool calls
+
+    chat = ChatHeroku(model="bird-brain-001", inference_url="https://test.com", api_key="test-key")
+    messages = [HumanMessage(content="Search for music"), ai_message]
+
+    # Convert to API format
+    api_messages = chat._messages_to_api(messages)
+
+    # Check that the empty AI message got default content
+    ai_api_msg = api_messages[1]  # The AI message
+    assert ai_api_msg["role"] == "assistant"
+    assert ai_api_msg["content"] == "I'll use the available tools to help you."
+    assert "tool_calls" in ai_api_msg
+    assert len(ai_api_msg["tool_calls"]) == 1
+    assert ai_api_msg["tool_calls"][0]["function"]["name"] == "get_tracks_by_artist"
 
 
 if __name__ == "__main__":

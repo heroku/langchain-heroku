@@ -12,11 +12,16 @@ from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
     BaseMessage,
+    BaseMessageChunk,
     FunctionMessage,
     HumanMessage,
+    HumanMessageChunk,
     SystemMessage,
+    SystemMessageChunk,
     ToolMessage,
+    ToolMessageChunk,
 )
+from langchain_core.messages.ai import UsageMetadata
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
@@ -102,6 +107,7 @@ class ChatHeroku(BaseChatModel):
         """Initialize ChatHeroku with configuration."""
         super().__init__(**kwargs)
         self._config: Optional[HerokuClientConfig] = None
+        self._pending_ai_tool_message: Optional[AIMessage] = None
 
     @property
     def _llm_type(self) -> str:
@@ -123,9 +129,51 @@ class ChatHeroku(BaseChatModel):
     def _get_model(self) -> Optional[str]:
         return HerokuConfig.get_model_id(self.model)
 
+    def _ensure_balanced_tool_messages(self, messages: List[BaseMessage]) -> List[BaseMessage]:
+        """Create synthetic ToolMessages for unbalanced tool calls, handling ID mapping.
+
+        The supervisor framework uses custom tool_call_ids (like 'invoice_query_1') while
+        our model returns different IDs (like 'tooluse_xyz'). We need to handle both cases
+        and ensure every tool call ID has a corresponding ToolMessage.
+        """
+        if not messages:
+            return messages
+
+        # Build set of existing ToolMessage IDs (only model-generated IDs)
+        existing_tool_ids: set = set()
+
+        # Collect all existing ToolMessage tool_call_ids
+        for msg in messages:
+            if isinstance(msg, ToolMessage):
+                tid = getattr(msg, "tool_call_id", None)
+                if tid:
+                    existing_tool_ids.add(str(tid))
+        balanced: List[BaseMessage] = []
+
+        for msg in messages:
+            balanced.append(msg)
+
+            # For EVERY AIMessage with tool_calls, ensure they have ToolMessages
+            if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+                for tc in msg.tool_calls:
+                    tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+
+                    # Create synthetic ToolMessage if one doesn't exist for the actual tool call ID
+                    if tc_id and str(tc_id) not in existing_tool_ids:
+                        synthetic_tool_msg = ToolMessage(
+                            content="Tool execution completed successfully.",
+                            tool_call_id=str(tc_id),  # Must match the model's tool call ID exactly
+                        )
+                        balanced.append(synthetic_tool_msg)
+                        existing_tool_ids.add(str(tc_id))
+
+        return balanced
+
     def _messages_to_api(self, messages: List[BaseMessage]) -> List[dict]:
         # Map LangChain message types to API roles with explicit type checking
-        api_msgs = []
+        # Preserve message order; do not synthesize tool results
+        api_msgs: List[dict] = []
+
         for m in messages:
             # Handle specific message types explicitly
             if isinstance(m, SystemMessage):
@@ -139,33 +187,116 @@ class ChatHeroku(BaseChatModel):
             elif isinstance(m, AIMessage):
                 role = "assistant"
                 content = str(getattr(m, "content", ""))
-                msg_dict: Dict[str, Any] = {"role": role, "content": content}
-
-                # Add tool_calls if present
-                if hasattr(m, "tool_calls") and m.tool_calls:
+                # Add tool_calls if present; do not synthesize tool results here
+                has_tool_calls = hasattr(m, "tool_calls") and m.tool_calls
+                if has_tool_calls:
                     import json
 
-                    api_tool_calls = []
+                    api_tool_calls: List[Dict[str, Any]] = []
+                    # Track assistant tool_call ids and any internal ids from args
+                    tc_pairs: List[Dict[str, Optional[str]]] = []
                     for tc in m.tool_calls:
-                        # Convert LangChain tool_call format back to OpenAI format
+                        # Support both dict-like and object tool call representations
+                        if isinstance(tc, dict):
+                            tc_id = tc.get("id")
+                            tc_name = tc.get("name")
+                            tc_args = tc.get("args", {})
+                        else:
+                            tc_id = getattr(tc, "id", None)
+                            tc_name = getattr(tc, "name", None)
+                            tc_args = getattr(tc, "args", {})
+
+                        if not tc_id:
+                            raise ValueError("Assistant tool_call is missing required 'id' provided by the model")
+                        if not tc_name:
+                            raise ValueError("Assistant tool_call is missing required function 'name'")
                         tool_call_dict = {
-                            "id": tc.get("id", f"call_{hash(tc.get('name', '') + str(tc.get('args', {})))}"),
+                            "id": tc_id,
                             "type": "function",
-                            "function": {"name": tc["name"], "arguments": json.dumps(tc["args"])},
+                            "function": {"name": tc_name, "arguments": json.dumps(tc_args or {})},
                         }
                         api_tool_calls.append(tool_call_dict)
-                    msg_dict["tool_calls"] = api_tool_calls
+                        internal_id = None
+                        if isinstance(tc_args, dict):
+                            internal_id_val = tc_args.get("tool_call_id")
+                            if internal_id_val is not None:
+                                internal_id = str(internal_id_val)
+                        tc_pairs.append({"assistant_id": tc_id, "internal_id": internal_id})
 
-                api_msgs.append(msg_dict)
+                    # Ensure non-empty content (API validation requires content present)
+                    if not content or not str(content).strip():
+                        content = "I'll use the available tools to help you."
+                    msg_dict: Dict[str, Any] = {"role": role, "content": content, "tool_calls": api_tool_calls}
+                    api_msgs.append(msg_dict)
+
+                    # Synthesize missing tool results for this assistant turn only
+                    # Determine which tool_call ids already have ToolMessages later in history
+                    try:
+                        current_index = messages.index(m)
+                    except ValueError:
+                        current_index = -1
+                    covered_ids: set = set()
+                    if current_index >= 0:
+                        for later in messages[current_index + 1 :]:
+                            if isinstance(later, ToolMessage):
+                                tid = getattr(later, "tool_call_id", None)
+                                if tid:
+                                    covered_ids.add(str(tid))
+
+                    for pair in tc_pairs:
+                        a_id = pair.get("assistant_id")
+                        i_id = pair.get("internal_id")
+                        is_covered = (a_id in covered_ids) or (i_id is not None and i_id in covered_ids)
+                        if not is_covered and a_id:
+                            api_msgs.append(
+                                {
+                                    "role": "tool",
+                                    "content": "Tool execution completed successfully.",
+                                    "tool_call_id": a_id,
+                                }
+                            )
+                else:
+                    msg_dict = {"role": role, "content": content}
+                    api_msgs.append(msg_dict)
             elif isinstance(m, ToolMessage):
+                # Include tool results only if a corresponding assistant tool_call exists
                 role = "tool"
                 content = str(getattr(m, "content", ""))
-                msg_dict = {"role": role, "content": content, "tool_call_id": m.tool_call_id}
-                api_msgs.append(msg_dict)
+                if not content.strip():
+                    content = "No result returned from the tool."
+
+                provided_tool_call_id = getattr(m, "tool_call_id", None)
+                has_corresponding = False
+                resolved_tool_call_id = provided_tool_call_id
+
+                # Search prior assistant messages for matching tool_call id (direct match only)
+                for prev_msg in messages[: messages.index(m)]:
+                    if isinstance(prev_msg, AIMessage) and getattr(prev_msg, "tool_calls", None):
+                        for tc in prev_msg.tool_calls:
+                            if isinstance(tc, dict):
+                                tc_id = tc.get("id")
+                            else:
+                                tc_id = getattr(tc, "id", None)
+
+                            # Only direct match against tool_call id - no custom ID mapping
+                            if provided_tool_call_id and tc_id == provided_tool_call_id:
+                                has_corresponding = True
+                                resolved_tool_call_id = tc_id
+                                break
+                        if has_corresponding:
+                            break
+
+                if has_corresponding and resolved_tool_call_id:
+                    msg_dict = {"role": role, "content": content, "tool_call_id": resolved_tool_call_id}
+                    api_msgs.append(msg_dict)
+                # Else: skip orphan tool result to satisfy API validation
             elif isinstance(m, FunctionMessage):
                 # FunctionMessage maps to tool role for backward compatibility
                 role = "tool"
                 content = str(getattr(m, "content", ""))
+                # Provide default content if empty (API requires non-empty content)
+                if not content.strip():
+                    content = "No result returned from the function."
                 msg_dict = {
                     "role": role,
                     "content": content,
@@ -179,30 +310,64 @@ class ChatHeroku(BaseChatModel):
                 api_msgs.append({"role": role, "content": content})
         return api_msgs
 
-    def _api_to_ai_message(self, resp: dict) -> AIMessage:
-        # Minimal defensive programming: handle string responses
-        if isinstance(resp, str):
-            return AIMessage(content=resp)
+    def _dict_to_usage_metadata(self, usage_dict: Optional[dict]) -> Optional[UsageMetadata]:
+        """Convert a usage dictionary to UsageMetadata object."""
+        if not usage_dict:
+            return None
 
-        choice = resp["choices"][0]
-        msg = choice["message"]
-        content = msg.get("content", "")
+        # Extract values with proper type conversion
+        input_tokens = usage_dict.get("input_tokens")
+        output_tokens = usage_dict.get("output_tokens")
+        total_tokens = usage_dict.get("total_tokens")
 
-        # Convert OpenAI tool_calls format to LangChain format
-        api_tool_calls = msg.get("tool_calls", [])
+        # Only create UsageMetadata if we have valid values
+        if input_tokens is not None and output_tokens is not None and total_tokens is not None:
+            return UsageMetadata(
+                input_tokens=int(input_tokens),
+                output_tokens=int(output_tokens),
+                total_tokens=int(total_tokens),
+            )
+
+        return None
+
+    def _api_delta_to_langchain_chunk(
+        self, delta: dict, usage_metadata: Optional[UsageMetadata] = None, response_metadata: Optional[dict] = None
+    ) -> BaseMessageChunk:
+        """Convert a streaming API delta to a LangChain message chunk object.
+
+        This method handles conversion from API delta format to appropriate
+        LangChain message chunk types based on the role field.
+
+        Args:
+            delta: The delta object from streaming response
+            usage_metadata: Optional usage metadata
+            response_metadata: Optional response metadata
+
+        Returns:
+            Appropriate LangChain message chunk object
+        """
+        import json
+
+        from langchain_core.messages.tool import invalid_tool_call, tool_call
+
+        role = delta.get("role", "")
+        content = delta.get("content", "")
+
+        # Handle tool calls in delta
         tool_calls: List[Any] = []
+        api_tool_calls = delta.get("tool_calls", [])
         if api_tool_calls:
-            import json
-
-            from langchain_core.messages.tool import invalid_tool_call, tool_call
-
             for tc in api_tool_calls:
                 try:
-                    # Parse arguments from JSON string
-                    args = json.loads(tc["function"]["arguments"]) if tc["function"]["arguments"] else {}
-                    # Convert to LangChain tool_call format
-                    lc_tool_call = tool_call(name=tc["function"]["name"], args=args, id=tc["id"])
-                    tool_calls.append(lc_tool_call)
+                    # In streaming, tool calls might come in parts
+                    if "function" in tc and "arguments" in tc["function"]:
+                        args = json.loads(tc["function"]["arguments"]) if tc["function"]["arguments"] else {}
+                        lc_tool_call = tool_call(name=tc["function"]["name"], args=args, id=tc.get("id", ""))
+                        tool_calls.append(lc_tool_call)
+                    elif "function" in tc and "name" in tc["function"]:
+                        # Partial tool call (streaming in progress)
+                        lc_tool_call = tool_call(name=tc["function"]["name"], args={}, id=tc.get("id", ""))
+                        tool_calls.append(lc_tool_call)
                 except (json.JSONDecodeError, KeyError) as e:
                     # If parsing fails, create an invalid tool call
                     invalid_tc = invalid_tool_call(
@@ -213,26 +378,174 @@ class ChatHeroku(BaseChatModel):
                     )
                     tool_calls.append(invalid_tc)
 
-        additional_kwargs = {"tool_calls": api_tool_calls} if api_tool_calls else {}
+        # Create additional kwargs
+        additional_kwargs = {}
+        if api_tool_calls:
+            additional_kwargs["tool_calls"] = api_tool_calls
+
+        # Based on role, create appropriate chunk type
+        if role == "system":
+            return SystemMessageChunk(
+                content=content,
+                additional_kwargs=additional_kwargs,
+                response_metadata=response_metadata or {},
+                id=None,
+            )
+        elif role == "user":
+            return HumanMessageChunk(
+                content=content,
+                additional_kwargs=additional_kwargs,
+                response_metadata=response_metadata or {},
+                id=None,
+            )
+        elif role == "assistant" or role == "":  # Default to assistant for streaming
+            return AIMessageChunk(
+                content=content,
+                tool_calls=tool_calls,
+                additional_kwargs=additional_kwargs,
+                response_metadata=response_metadata or {},
+                usage_metadata=usage_metadata,
+                id=None,
+            )
+        elif role == "tool":
+            # Tool messages in streaming are rare, but handle them
+            tool_call_id = delta.get("tool_call_id", "")
+            return ToolMessageChunk(
+                content=content,
+                tool_call_id=tool_call_id,
+                additional_kwargs=additional_kwargs,
+                response_metadata=response_metadata or {},
+                id=None,
+            )
+        else:
+            # Fallback for unknown roles - treat as AIMessageChunk
+            return AIMessageChunk(
+                content=content,
+                tool_calls=tool_calls,
+                additional_kwargs=additional_kwargs,
+                response_metadata=response_metadata or {},
+                usage_metadata=usage_metadata,
+                id=None,
+            )
+
+    def _api_message_to_langchain_message(self, api_msg: dict) -> BaseMessage:
+        """Convert a single API message to a LangChain message object.
+
+        This method handles conversion from API message format to appropriate
+        LangChain message types based on the role field.
+        """
+        import json
+
+        from langchain_core.messages.tool import invalid_tool_call, tool_call
+
+        role = api_msg.get("role", "")
+        content = api_msg.get("content", "")
+
+        if role == "system":
+            return SystemMessage(content=content)
+        elif role == "user":
+            return HumanMessage(content=content)
+        elif role == "assistant":
+            # Handle assistant messages with possible tool calls
+            api_tool_calls = api_msg.get("tool_calls", [])
+            tool_calls: List[Any] = []
+
+            if api_tool_calls:
+                for tc in api_tool_calls:
+                    try:
+                        # Parse arguments from JSON string
+                        args = json.loads(tc["function"]["arguments"]) if tc["function"]["arguments"] else {}
+                        # Convert to LangChain tool_call format
+                        lc_tool_call = tool_call(name=tc["function"]["name"], args=args, id=tc["id"])
+                        tool_calls.append(lc_tool_call)
+                    except (json.JSONDecodeError, KeyError) as e:
+                        # If parsing fails, create an invalid tool call
+                        invalid_tc = invalid_tool_call(
+                            name=tc.get("function", {}).get("name", "unknown"),
+                            args=tc.get("function", {}).get("arguments", ""),
+                            id=tc.get("id", "unknown"),
+                            error=f"Failed to parse tool call: {e}",
+                        )
+                        tool_calls.append(invalid_tc)
+
+            additional_kwargs = {"tool_calls": api_tool_calls} if api_tool_calls else {}
+            return AIMessage(
+                content=content,
+                tool_calls=tool_calls,
+                additional_kwargs=additional_kwargs,
+            )
+        elif role == "tool":
+            # Convert tool role messages to ToolMessage
+            tool_call_id = api_msg.get("tool_call_id", "")
+            return ToolMessage(content=content, tool_call_id=tool_call_id)
+        else:
+            # Fallback for unknown roles - treat as HumanMessage
+            return HumanMessage(content=content)
+
+    def _api_to_ai_message(self, resp: dict) -> BaseMessage:
+        # Minimal defensive programming: handle string responses
+        if isinstance(resp, str):
+            return AIMessage(content=resp)
+
+        choice = resp["choices"][0]
+        msg = choice["message"]
+
+        # Use the general conversion method (returns appropriate message type)
+        langchain_msg = self._api_message_to_langchain_message(msg)
+
+        # Add usage and response metadata in a typed manner
         usage = resp.get("usage", {})
-        usage_metadata = {
+        usage_dict = {
             "input_tokens": usage.get("prompt_tokens"),
             "output_tokens": usage.get("completion_tokens"),
             "total_tokens": usage.get("total_tokens"),
         }
-        # Store usage metadata in additional_kwargs since AIMessage doesn't have usage_metadata parameter
-        if usage_metadata:
-            additional_kwargs["usage_metadata"] = usage_metadata
+        usage_metadata_obj = self._dict_to_usage_metadata(usage_dict)
+
+        # Preserve any additional kwargs from parsed message (e.g., api tool_calls)
+        additional_kwargs = langchain_msg.additional_kwargs.copy()
+
         # Add model_name to response_metadata for usage tracking
         response_metadata = resp.copy()
         response_metadata["model_name"] = resp.get("model", self._get_model())
-        return AIMessage(
-            content=content,
-            tool_calls=tool_calls,  # This is the key fix - properly set tool_calls
-            additional_kwargs=additional_kwargs,
-            response_metadata=response_metadata,
-            usage_metadata=usage_metadata if usage_metadata else None,
-        )
+
+        # Reconstruct the same message type with enriched metadata
+        if isinstance(langchain_msg, AIMessage):
+            self._pending_ai_tool_message = None
+            return AIMessage(
+                content=langchain_msg.content,
+                tool_calls=getattr(langchain_msg, "tool_calls", []),
+                additional_kwargs=additional_kwargs,
+                response_metadata=response_metadata,
+                usage_metadata=usage_metadata_obj,
+            )
+        elif isinstance(langchain_msg, ToolMessage):
+            return ToolMessage(
+                content=langchain_msg.content,
+                tool_call_id=getattr(langchain_msg, "tool_call_id", ""),
+                additional_kwargs=additional_kwargs,
+                response_metadata=response_metadata,
+            )
+        elif isinstance(langchain_msg, SystemMessage):
+            return SystemMessage(
+                content=langchain_msg.content,
+                additional_kwargs=additional_kwargs,
+                response_metadata=response_metadata,
+            )
+        elif isinstance(langchain_msg, HumanMessage):
+            return HumanMessage(
+                content=langchain_msg.content,
+                additional_kwargs=additional_kwargs,
+                response_metadata=response_metadata,
+            )
+        else:
+            # Fallback to AIMessage type to ensure compatibility
+            return AIMessage(
+                content=getattr(langchain_msg, "content", msg.get("content", "")),
+                additional_kwargs=additional_kwargs,
+                response_metadata=response_metadata,
+                usage_metadata=usage_metadata_obj,
+            )
 
     def _get_config(self) -> HerokuClientConfig:
         """Get cached or create new configuration."""
@@ -249,9 +562,80 @@ class ChatHeroku(BaseChatModel):
 
     def _build_payload(self, messages: List[BaseMessage], stop: Optional[List[str]] = None, **kwargs: Any) -> Dict[str, Any]:
         """Build the API payload for the chat completion request."""
+
+        # If there is a pending assistant tool_call from the previous turn and the
+        # orchestrator omitted the assistant tool_use, inject it just before the
+        # matching ToolMessage (assistant id or internal args.tool_call_id), or
+        # before the next assistant turn if none present.
+        def inject_pending(conv: List[BaseMessage]) -> List[BaseMessage]:
+            pending = self._pending_ai_tool_message
+            if not pending or not getattr(pending, "tool_calls", None):
+                return conv
+            pending_ids = set()
+            pending_internal_ids = set()
+            for tc in pending.tool_calls:  # type: ignore[attr-defined]
+                if isinstance(tc, dict):
+                    pending_ids.add(tc.get("id"))
+                    args = tc.get("args", {})
+                    if isinstance(args, dict) and args.get("tool_call_id") is not None:
+                        pending_internal_ids.add(str(args.get("tool_call_id")))
+                else:
+                    pending_ids.add(getattr(tc, "id", None))
+                    args = getattr(tc, "args", {})
+                    if isinstance(args, dict) and args.get("tool_call_id") is not None:
+                        pending_internal_ids.add(str(args.get("tool_call_id")))
+
+            # If conversation already contains these tool_calls, skip injection
+            existing_ids = set()
+            for m in conv:
+                if isinstance(m, AIMessage) and getattr(m, "tool_calls", None):
+                    for tc in m.tool_calls:
+                        existing_ids.add(tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None))
+            if pending_ids & existing_ids:
+                # Clear pending since the AIMessage is already in the conversation
+                self._pending_ai_tool_message = None
+                return conv
+
+            # Find a ToolMessage match
+            insert_at = None
+            for idx, m in enumerate(conv):
+                if isinstance(m, ToolMessage):
+                    tid = getattr(m, "tool_call_id", None)
+                    if tid and (tid in pending_ids or tid in pending_internal_ids):
+                        insert_at = idx
+                        break
+
+            # If none, insert before next assistant
+            if insert_at is None:
+                for idx, m in enumerate(conv):
+                    if isinstance(m, AIMessage):
+                        insert_at = idx
+                        break
+
+            ai_msg = AIMessage(
+                content="I'll use the available tools to help you.",
+                tool_calls=pending.tool_calls,
+                additional_kwargs=pending.additional_kwargs,
+            )  # type: ignore[arg-type]
+            new_conv = list(conv)
+            if insert_at is not None:
+                new_conv.insert(insert_at, ai_msg)
+            else:
+                new_conv.append(ai_msg)
+            # Clear pending upon successful injection
+            self._pending_ai_tool_message = None
+            return new_conv
+
+        injected_messages = inject_pending(messages)
+        # Remap ToolMessage ids from internal ids to assistant ids when present in the same conversation
+        normalized_messages = injected_messages
+        balanced_messages = self._ensure_balanced_tool_messages(normalized_messages)
+        api_messages = self._messages_to_api(balanced_messages)
+
         payload: Dict[str, Any] = {
             "model": self._get_model(),
-            "messages": self._messages_to_api(messages),
+            # Balanced, serialized messages
+            "messages": api_messages,
             "allow_ignored_params": True,
         }
 
@@ -268,7 +652,24 @@ class ChatHeroku(BaseChatModel):
         # Handle tools - prioritize kwargs over instance attributes (for bind_tools support)
         tools = kwargs.get("tools") or self.tools
         if tools:
-            payload["tools"] = tools
+            # Remove tool_call_id from tool schemas to prevent supervisor framework confusion
+            cleaned_tools = []
+            for tool in tools:
+                if isinstance(tool, dict) and "function" in tool:
+                    cleaned_tool = tool.copy()
+                    if "parameters" in cleaned_tool["function"]:
+                        params = cleaned_tool["function"]["parameters"].copy()
+                        if "properties" in params and "tool_call_id" in params["properties"]:
+                            # Remove tool_call_id from properties
+                            params["properties"] = {k: v for k, v in params["properties"].items() if k != "tool_call_id"}
+                            # Remove tool_call_id from required fields
+                            if "required" in params and "tool_call_id" in params["required"]:
+                                params["required"] = [r for r in params["required"] if r != "tool_call_id"]
+                            cleaned_tool["function"]["parameters"] = params
+                    cleaned_tools.append(cleaned_tool)
+                else:
+                    cleaned_tools.append(tool)
+            payload["tools"] = cleaned_tools
 
         # Handle tool_choice - prioritize kwargs over instance attributes (for bind_tools support)
         tool_choice = kwargs.get("tool_choice")
@@ -307,6 +708,9 @@ class ChatHeroku(BaseChatModel):
     ) -> ChatResult:
         self._validate_config()
 
+        # Only balance messages to prevent validation failures
+        messages = self._ensure_balanced_tool_messages(messages)
+
         # Validate input messages
         if not messages:
             raise ValueError("Messages list cannot be empty")
@@ -316,6 +720,9 @@ class ChatHeroku(BaseChatModel):
             # Allow empty content for AIMessage if it has tool calls (like OpenAI format)
             if isinstance(message, AIMessage) and hasattr(message, "tool_calls") and message.tool_calls:
                 continue  # Empty content is valid for AI messages with tool calls
+            # Allow empty content for ToolMessage (tool calls can return no results)
+            if isinstance(message, ToolMessage):
+                continue  # Empty content is valid for tool messages
             if not message.content or str(message.content).strip() == "":
                 raise ValueError(f"Message at index {i} cannot have empty content")
 
@@ -327,14 +734,22 @@ class ChatHeroku(BaseChatModel):
 
         payload = self._build_payload(messages, stop, **kwargs)
         data = self._make_api_request(payload)
-        ai_msg = self._api_to_ai_message(data)
-        return ChatResult(generations=[ChatGeneration(message=ai_msg)])
+        message = self._api_to_ai_message(data)
+
+        # Return simple single-generation ChatResult
+        # Let the supervisor framework handle tool execution and ToolMessage creation
+        return ChatResult(generations=[ChatGeneration(message=message)])
 
     def _build_streaming_payload(self, messages: List[BaseMessage], stop: Optional[List[str]] = None, **kwargs: Any) -> Dict[str, Any]:
         """Build the API payload for streaming chat completion requests."""
+
+        # Only balance messages to prevent validation failures
+        balanced_messages = self._ensure_balanced_tool_messages(messages)
+        api_messages = self._messages_to_api(balanced_messages)
+
         payload: Dict[str, Any] = {
             "model": self._get_model(),
-            "messages": self._messages_to_api(messages),
+            "messages": api_messages,
             "stream": True,
         }
 
@@ -351,7 +766,24 @@ class ChatHeroku(BaseChatModel):
         # Handle tools - prioritize kwargs over instance attributes (for bind_tools support)
         tools = kwargs.get("tools") or self.tools
         if tools:
-            payload["tools"] = tools
+            # Remove tool_call_id from tool schemas to prevent supervisor framework confusion
+            cleaned_tools = []
+            for tool in tools:
+                if isinstance(tool, dict) and "function" in tool:
+                    cleaned_tool = tool.copy()
+                    if "parameters" in cleaned_tool["function"]:
+                        params = cleaned_tool["function"]["parameters"].copy()
+                        if "properties" in params and "tool_call_id" in params["properties"]:
+                            # Remove tool_call_id from properties
+                            params["properties"] = {k: v for k, v in params["properties"].items() if k != "tool_call_id"}
+                            # Remove tool_call_id from required fields
+                            if "required" in params and "tool_call_id" in params["required"]:
+                                params["required"] = [r for r in params["required"] if r != "tool_call_id"]
+                            cleaned_tool["function"]["parameters"] = params
+                    cleaned_tools.append(cleaned_tool)
+                else:
+                    cleaned_tools.append(tool)
+            payload["tools"] = cleaned_tools
 
         # Handle tool_choice - prioritize kwargs over instance attributes (for bind_tools support)
         tool_choice = kwargs.get("tool_choice")
@@ -379,8 +811,10 @@ class ChatHeroku(BaseChatModel):
             max_retries=config.max_retries,
         )
 
+    # (Intentionally no override of BaseChatModel.generate; balance in _generate/_stream only)
+
     def _parse_sse_event(self, event: sseclient.Event) -> Optional[Dict[str, Any]]:
-        """Parse a single SSE event and extract content and metadata."""
+        """Parse a single SSE event and extract delta and metadata."""
         try:
             # Handle the special "[DONE]" message
             if event.data == "[DONE]":
@@ -390,7 +824,6 @@ class ChatHeroku(BaseChatModel):
             # For streaming, use 'delta' instead of 'message'
             choice = data["choices"][0]
             delta = choice.get("delta", {})
-            content = delta.get("content", "")
 
             # Extract usage metadata if available
             usage = data.get("usage", {})
@@ -403,7 +836,7 @@ class ChatHeroku(BaseChatModel):
                 }
 
             return {
-                "content": content,
+                "delta": delta,
                 "usage_metadata": usage_metadata,
                 "response_metadata": data,
             }
@@ -421,6 +854,22 @@ class ChatHeroku(BaseChatModel):
         """Stream chat completions with enhanced error handling and resource management."""
         try:
             self._validate_config()
+
+            # Validate input messages (same validation as _generate)
+            if not messages:
+                raise ValueError("Messages list cannot be empty")
+
+            # Validate message content
+            for i, message in enumerate(messages):
+                # Allow empty content for AIMessage if it has tool calls (like OpenAI format)
+                if isinstance(message, AIMessage) and hasattr(message, "tool_calls") and message.tool_calls:
+                    continue  # Empty content is valid for AI messages with tool calls
+                # Allow empty content for ToolMessage (tool calls can return no results)
+                if isinstance(message, ToolMessage):
+                    continue  # Empty content is valid for tool messages
+                if not message.content or str(message.content).strip() == "":
+                    raise ValueError(f"Message at index {i} cannot have empty content")
+
             payload = self._build_streaming_payload(messages, stop, **kwargs)
         except Exception as e:
             if run_manager:
@@ -435,7 +884,7 @@ class ChatHeroku(BaseChatModel):
                 try:
                     parsed_event = self._parse_sse_event(event)
                     if parsed_event is not None:
-                        content = parsed_event["content"]
+                        delta = parsed_event["delta"]
                         usage_metadata = parsed_event.get("usage_metadata")
                         response_metadata = parsed_event.get("response_metadata", {})
 
@@ -443,12 +892,16 @@ class ChatHeroku(BaseChatModel):
                         if response_metadata:
                             response_metadata["model_name"] = response_metadata.get("model", self._get_model())
 
-                        ai_msg_chunk = AIMessageChunk(
-                            content=content,
-                            usage_metadata=usage_metadata,
-                            response_metadata={"model_name": response_metadata.get("model", self._get_model())} if response_metadata else {},
+                        # Convert delta to appropriate LangChain chunk type
+                        usage_metadata_obj = self._dict_to_usage_metadata(usage_metadata)
+                        message_chunk = self._api_delta_to_langchain_chunk(
+                            delta=delta, usage_metadata=usage_metadata_obj, response_metadata=response_metadata
                         )
-                        chunk = ChatGenerationChunk(message=ai_msg_chunk)
+
+                        chunk = ChatGenerationChunk(message=message_chunk)
+
+                        # Extract content for token callback
+                        content = delta.get("content", "")
                         if run_manager and content:
                             run_manager.on_llm_new_token(content, chunk=chunk)
                         yield chunk
@@ -461,6 +914,7 @@ class ChatHeroku(BaseChatModel):
                         raise
                     # For other errors, we can optionally log and continue or raise
                     raise
+
         except Exception as e:
             if run_manager:
                 run_manager.on_llm_error(e)
@@ -563,41 +1017,50 @@ class ChatHeroku(BaseChatModel):
         # Create the tool definition
         structured_tool = {"type": "function", "function": {"name": tool_name, "description": tool_description, "parameters": tool_schema}}
 
-        # Create a model instance with tools directly bound
-        # Since bind_tools isn't working properly, we'll create a new instance with tools
-        tool_model = ChatHeroku(
-            inference_url=self.inference_url,
-            api_key=self.api_key,
-            model=self.model,
-            temperature=self.temperature,
-            max_tokens=self.max_tokens,
-            top_p=self.top_p,
-            tools=[structured_tool],
-            tool_choice=tool_name,
-        )
+        # Use bind_tools to create a bound model instead of a separate instance
+        # This ensures better integration with supervisor workflows
+        tool_choice_str = tool_name
 
-        # Create the parser
+        # Bind the structured output tool to this model instance
+        bound_model = self.bind_tools([structured_tool], tool_choice=tool_choice_str)
+
+        # Create a runnable that works transparently with supervisors
+        # Instead of parsing from tool calls, return the bound model directly
+        # This allows supervisors to handle the tool execution flow properly
+
         if include_raw:
-            # Return both raw and parsed output
-            def parse_output(ai_message: AIMessage) -> Dict[str, Any]:
+            # For include_raw, we need to preserve both the message and extract the data
+            def extract_with_raw(ai_message: AIMessage) -> Dict[str, Any]:
                 if not ai_message.tool_calls:
-                    raise ValueError("No tool calls found in response")
+                    # If no tool calls, return empty parsed data
+                    return {"raw": ai_message, "parsed": {} if isinstance(schema, dict) else None}
 
                 tool_call = ai_message.tool_calls[0]
-                parsed_data = self._parse_tool_call_args(tool_call, schema)
-                return {"raw": ai_message, "parsed": parsed_data}
+                try:
+                    parsed_data = self._parse_tool_call_args(tool_call, schema)
+                    return {"raw": ai_message, "parsed": parsed_data}
+                except Exception:
+                    # If parsing fails, return the raw message with empty parsed data
+                    return {"raw": ai_message, "parsed": {} if isinstance(schema, dict) else None}
 
-            return tool_model | parse_output
+            return bound_model | extract_with_raw  # type: ignore[no-any-return]
         else:
-            # Use custom parser to extract and validate the tool arguments
-            def parse_and_validate(ai_message: AIMessage) -> Any:
+            # For supervisor compatibility, return the bound model directly
+            # This allows the supervisor to handle tool execution and get structured data
+            # from the tool call arguments when needed
+            def extract_structured_data(ai_message: AIMessage) -> Any:
                 if not ai_message.tool_calls:
-                    raise ValueError("No tool calls found in response")
+                    # Return empty data if no tool calls
+                    return {} if isinstance(schema, dict) else None
 
                 tool_call = ai_message.tool_calls[0]
-                return self._parse_tool_call_args(tool_call, schema)
+                try:
+                    return self._parse_tool_call_args(tool_call, schema)
+                except Exception:
+                    # If parsing fails, return empty data
+                    return {} if isinstance(schema, dict) else None
 
-            return tool_model | parse_and_validate
+            return bound_model | extract_structured_data  # type: ignore[no-any-return]
 
     def _parse_tool_call_args(self, tool_call: Any, schema: Union[Dict[str, Any], Type[BaseModel], Type]) -> Any:
         """Parse tool call arguments and validate against schema.

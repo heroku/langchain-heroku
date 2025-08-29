@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Simple test runner for LangGraph 101 exercises with CharHeroku.
+Simple test runner for LangGraph 101 exercises with ChatHeroku.
 
 This script provides a quick way to verify that the LangGraph 101 multi-agent
-exercises work correctly with CharHeroku without running the full pytest suite.
+exercises work correctly with ChatHeroku without running the full pytest suite.
 
 Usage:
     python scripts/test_langgraph_101_heroku.py
@@ -43,39 +43,39 @@ def check_environment() -> bool:
     return True
 
 
-def test_charheroku_import() -> bool:
-    """Test that CharHeroku can be imported."""
+def test_ChatHeroku_import() -> bool:
+    """Test that ChatHeroku can be imported."""
     try:
         # Test import without assigning to unused variable
         import importlib.util
 
         spec = importlib.util.find_spec("langchain_heroku")
         if spec is not None:
-            print("✅ CharHeroku available for import")
+            print("✅ ChatHeroku available for import")
         else:
-            print("❌ CharHeroku not available")
+            print("❌ ChatHeroku not available")
         return True
     except ImportError as e:
-        print(f"❌ Failed to import CharHeroku: {e}")
+        print(f"❌ Failed to import ChatHeroku: {e}")
         return False
 
 
-def test_charheroku_initialization() -> bool:
-    """Test that CharHeroku can be initialized."""
+def test_ChatHeroku_initialization() -> bool:
+    """Test that ChatHeroku can be initialized."""
     try:
         from langchain_heroku import ChatHeroku
 
         chat_model = ChatHeroku()
-        print("✅ CharHeroku initialized successfully")
+        print("✅ ChatHeroku initialized successfully")
 
         # Test basic properties
         assert hasattr(chat_model, "_llm_type")
         assert chat_model._llm_type == "heroku"
-        print("✅ CharHeroku properties verified")
+        print("✅ ChatHeroku properties verified")
 
         return True
     except Exception as e:
-        print(f"❌ Failed to initialize CharHeroku: {e}")
+        print(f"❌ Failed to initialize ChatHeroku: {e}")
         return False
 
 
@@ -102,7 +102,7 @@ def test_langgraph_imports() -> bool:
 
 
 def test_basic_workflow() -> bool:
-    """Test a basic LangGraph workflow with CharHeroku."""
+    """Test a basic LangGraph workflow with ChatHeroku."""
     try:
         from typing import Any, List, TypedDict
 
@@ -158,8 +158,8 @@ def test_basic_workflow() -> bool:
         return False
 
 
-def test_charheroku_with_tools() -> bool:
-    """Test CharHeroku with tool binding."""
+def test_ChatHeroku_with_tools() -> bool:
+    """Test ChatHeroku with tool binding."""
     try:
         from langchain_core.tools import tool
 
@@ -170,7 +170,7 @@ def test_charheroku_with_tools() -> bool:
             """A simple test tool."""
             return f"Tool result: {query}"
 
-        # Initialize CharHeroku
+        # Initialize ChatHeroku
         chat_model = ChatHeroku()
 
         # Bind tools
@@ -191,14 +191,14 @@ def test_charheroku_with_tools() -> bool:
         return False
 
 
-def test_charheroku_streaming() -> bool:
-    """Test CharHeroku streaming capability."""
+def test_ChatHeroku_streaming() -> bool:
+    """Test ChatHeroku streaming capability."""
     try:
         from langchain_core.messages import HumanMessage
 
         from langchain_heroku import ChatHeroku
 
-        # Initialize CharHeroku with streaming
+        # Initialize ChatHeroku with streaming
         chat_model = ChatHeroku(streaming=True)
 
         # Test streaming
@@ -217,7 +217,7 @@ def test_charheroku_streaming() -> bool:
 
 def main() -> int:
     """Main test runner."""
-    print("🚀 LangGraph 101 CharHeroku Integration Test Runner")
+    print("🚀 LangGraph 101 ChatHeroku Integration Test Runner")
     print("=" * 60)
 
     # Check environment
@@ -227,12 +227,12 @@ def main() -> int:
     print("\n🧪 Running tests...")
 
     tests = [
-        ("CharHeroku Import", test_charheroku_import),
-        ("CharHeroku Initialization", test_charheroku_initialization),
+        ("ChatHeroku Import", test_ChatHeroku_import),
+        ("ChatHeroku Initialization", test_ChatHeroku_initialization),
         ("LangGraph Imports", test_langgraph_imports),
         ("Basic Workflow", test_basic_workflow),
-        ("Tool Binding", test_charheroku_with_tools),
-        ("Streaming", test_charheroku_streaming),
+        ("Tool Binding", test_ChatHeroku_with_tools),
+        ("Streaming", test_ChatHeroku_streaming),
     ]
 
     passed = 0
@@ -252,7 +252,7 @@ def main() -> int:
     print(f"\n📊 Test Results: {passed}/{total} tests passed")
 
     if passed == total:
-        print("🎉 All tests passed! CharHeroku is ready for LangGraph 101 exercises.")
+        print("🎉 All tests passed! ChatHeroku is ready for LangGraph 101 exercises.")
         return 0
     else:
         print("⚠️  Some tests failed. Check the output above for details.")

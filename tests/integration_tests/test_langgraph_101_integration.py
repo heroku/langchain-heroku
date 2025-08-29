@@ -106,7 +106,7 @@ class TestLangGraph101WithChatHeroku:
         self.model = os.getenv("INFERENCE_MODEL_ID")
 
         if not all([self.inference_url, self.api_key, self.model]):
-            pytest.skip("Missing required environment variables for CharHeroku integration tests")
+            pytest.skip("Missing required environment variables for ChatHeroku integration tests")
 
         # Initialize ChatHeroku model
         try:
@@ -232,7 +232,7 @@ class TestLangGraph101WithChatHeroku:
         """Test Exercise 1: Environment Setup and Database Initialization."""
         print("\n🧪 Testing Exercise 1: Environment Setup and Database Initialization")
 
-        # Test 1: Verify CharHeroku model is working
+        # Test 1: Verify ChatHeroku model is working
         assert self.chat_model is not None
         assert hasattr(self.chat_model, "_llm_type")
         assert self.chat_model._llm_type == "heroku"
@@ -423,7 +423,7 @@ class TestLangGraph101WithChatHeroku:
                 messages: Annotated[List[Any], add_messages]
                 customer_id: str
                 loaded_memory: str
-                remaining_steps: RemainingSteps
+                remaining_steps: "RemainingSteps"
 
             # Test 2: Define tools for different agents
             @tool
@@ -550,7 +550,9 @@ class TestLangGraph101WithChatHeroku:
                 key = "user_memory"
                 result = store.get(namespace, key)
                 if result and result.value:
-                    return result.value.get("memory")
+                    memory_data = result.value.get("memory")
+                    if isinstance(memory_data, UserProfile):
+                        return memory_data
                 return None
 
             # Test memory operations

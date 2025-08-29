@@ -19,7 +19,7 @@ test_watch:
 integration_test integration_tests:
 	poetry run pytest $(TEST_FILE)
 
-# LangGraph 101 integration tests with CharHeroku
+# LangGraph 101 integration tests with ChatHeroku
 langgraph_test:
 	poetry run pytest tests/integration_tests/test_langgraph_101_integration.py -v -s
 
@@ -102,9 +102,9 @@ help:
 	@echo 'test                       - run unit tests'
 	@echo 'tests                      - run unit tests'
 	@echo 'test_watch                 - run tests in watch mode'
-	@echo 'langgraph_test             - test LangGraph 101 integration with CharHeroku'
-	@echo 'langgraph_quick            - quick test of LangGraph 101 with CharHeroku'
-	@echo 'langgraph_demo             - demo of LangGraph 101 with CharHeroku'
+	@echo 'langgraph_test             - test LangGraph 101 integration with ChatHeroku'
+	@echo 'langgraph_quick            - quick test of LangGraph 101 with ChatHeroku'
+	@echo 'langgraph_demo             - demo of LangGraph 101 with ChatHeroku'
 	@echo 'langgraph_robust           - robust implementation with fixes for common issues'
 	@echo 'langgraph_working          - working example that fixes all issues'
 	@echo 'integration_tests          - run integration tests'

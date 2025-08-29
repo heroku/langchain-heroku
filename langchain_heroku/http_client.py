@@ -60,15 +60,42 @@ class HerokuHTTPClient:
         if not isinstance(error_data, dict):
             error_data = {"raw_response": str(error_data)}
 
+        def _extract_error_message(error_data: Dict[str, Any]) -> Optional[str]:
+            """Extract error message from error_data, handling nested JSON strings."""
+            if not error_data.get("error"):
+                return None
+
+            error = error_data["error"]
+
+            # If error is a string, try to parse it as JSON
+            if isinstance(error, str):
+                try:
+                    import json
+
+                    parsed_error = json.loads(error)
+                    if isinstance(parsed_error, dict) and parsed_error.get("message"):
+                        message = parsed_error["message"]
+                        return str(message) if message is not None else None
+                except (json.JSONDecodeError, ValueError):
+                    return None
+            # If error is already a dict, get message directly
+            elif isinstance(error, dict) and error.get("message"):
+                message = error["message"]
+                return str(message) if message is not None else None
+
+            return None
+
         if response.status_code == 400:
             message = "Bad request. Check your request parameters."
-            if error_data.get("error", {}).get("message"):
-                message = error_data["error"]["message"]
+            extracted_message = _extract_error_message(error_data)
+            if extracted_message:
+                message = extracted_message
             raise HerokuValidationError(message, status_code=response.status_code, response_data=error_data, request_id=request_id, endpoint=endpoint)
         elif response.status_code == 401:
             message = "Authentication failed. Check your API key and permissions."
-            if error_data.get("error", {}).get("message"):
-                message = error_data["error"]["message"]
+            extracted_message = _extract_error_message(error_data)
+            if extracted_message:
+                message = extracted_message
             raise HerokuAuthenticationError(
                 message, status_code=response.status_code, response_data=error_data, request_id=request_id, endpoint=endpoint
             )
@@ -80,12 +107,14 @@ class HerokuHTTPClient:
             raise HerokuRateLimitError(message, status_code=response.status_code, response_data=error_data, request_id=request_id, endpoint=endpoint)
         elif response.status_code >= 500:
             message = f"Server error ({response.status_code}). This is likely a temporary issue."
-            if error_data.get("error", {}).get("message"):
-                message = error_data["error"]["message"]
+            extracted_message = _extract_error_message(error_data)
+            if extracted_message:
+                message = extracted_message
             raise HerokuAPIError(message, status_code=response.status_code, response_data=error_data, request_id=request_id, endpoint=endpoint)
         elif response.status_code >= 400:
-            if error_data.get("error", {}).get("message"):
-                message = error_data["error"]["message"]
+            extracted_message = _extract_error_message(error_data)
+            if extracted_message:
+                message = extracted_message
             else:
                 message = f"HTTP {response.status_code}: {response.text}"
             raise HerokuAPIError(message, status_code=response.status_code, response_data=error_data, request_id=request_id, endpoint=endpoint)
