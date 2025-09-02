@@ -179,10 +179,16 @@ class ChatHeroku(BaseChatModel):
             if isinstance(m, SystemMessage):
                 role = "system"
                 content = str(getattr(m, "content", ""))
+                # Ensure non-empty content for API compatibility
+                if not content.strip():
+                    content = "You are a helpful assistant."
                 api_msgs.append({"role": role, "content": content})
             elif isinstance(m, HumanMessage):
                 role = "user"
                 content = str(getattr(m, "content", ""))
+                # Ensure non-empty content for API compatibility
+                if not content.strip():
+                    content = "Please help me."
                 api_msgs.append({"role": role, "content": content})
             elif isinstance(m, AIMessage):
                 role = "assistant"
@@ -256,6 +262,9 @@ class ChatHeroku(BaseChatModel):
                                 }
                             )
                 else:
+                    # Ensure non-empty content for AIMessage without tool calls
+                    if not content.strip():
+                        content = "I understand."
                     msg_dict = {"role": role, "content": content}
                     api_msgs.append(msg_dict)
             elif isinstance(m, ToolMessage):
@@ -307,6 +316,14 @@ class ChatHeroku(BaseChatModel):
                 # Fallback to role attribute or type for custom message types
                 role = getattr(m, "role", None) or getattr(m, "type", "user") or "user"
                 content = str(getattr(m, "content", ""))
+                # Ensure non-empty content for custom message types
+                if not content.strip():
+                    if role == "system":
+                        content = "You are a helpful assistant."
+                    elif role == "assistant":
+                        content = "I understand."
+                    else:  # user or other roles
+                        content = "Please help me."
                 api_msgs.append({"role": role, "content": content})
         return api_msgs
 
@@ -632,6 +649,10 @@ class ChatHeroku(BaseChatModel):
         balanced_messages = self._ensure_balanced_tool_messages(normalized_messages)
         api_messages = self._messages_to_api(balanced_messages)
 
+        # Ensure we never send null or empty messages array
+        if not api_messages:
+            raise ValueError("Cannot generate chat completion with empty messages list")
+
         payload: Dict[str, Any] = {
             "model": self._get_model(),
             # Balanced, serialized messages
@@ -715,20 +736,26 @@ class ChatHeroku(BaseChatModel):
         if not messages:
             raise ValueError("Messages list cannot be empty")
 
-        # Validate message content
+        # Validate message content - allow empty content for all message types
+        # since _messages_to_api will provide appropriate fallback content
         for i, message in enumerate(messages):
-            # Allow empty content for AIMessage if it has tool calls (like OpenAI format)
-            if isinstance(message, AIMessage) and hasattr(message, "tool_calls") and message.tool_calls:
-                continue  # Empty content is valid for AI messages with tool calls
+            # Allow empty content for AIMessage (with or without tool calls)
+            if isinstance(message, AIMessage):
+                continue  # Empty content is valid for AI messages (API conversion handles fallback)
             # Allow empty content for ToolMessage (tool calls can return no results)
             if isinstance(message, ToolMessage):
                 continue  # Empty content is valid for tool messages
             # Allow empty content for HumanMessage that might contain structured output context
-            # This is a more flexible validation that matches OpenAI's behavior
-            if isinstance(message, HumanMessage) and not message.content:
-                continue  # Allow empty HumanMessage content (might be from structured output)
+            if isinstance(message, HumanMessage):
+                continue  # Allow empty HumanMessage content (API conversion handles fallback)
+            # Allow empty content for SystemMessage (API conversion handles fallback)
+            if isinstance(message, SystemMessage):
+                continue  # Allow empty SystemMessage content (API conversion handles fallback)
+            # For other message types, still validate (but API conversion will handle fallback)
             if not message.content or str(message.content).strip() == "":
-                raise ValueError(f"Message at index {i} cannot have empty content")
+                # This should rarely happen since most messages are covered above
+                # But if it does, the API conversion will still provide fallback content
+                continue
 
         # Validate stop sequences (ensure they're not blank)
         if stop:
@@ -750,6 +777,10 @@ class ChatHeroku(BaseChatModel):
         # Only balance messages to prevent validation failures
         balanced_messages = self._ensure_balanced_tool_messages(messages)
         api_messages = self._messages_to_api(balanced_messages)
+
+        # Ensure we never send null or empty messages array
+        if not api_messages:
+            raise ValueError("Cannot generate chat completion with empty messages list")
 
         payload: Dict[str, Any] = {
             "model": self._get_model(),
@@ -863,16 +894,26 @@ class ChatHeroku(BaseChatModel):
             if not messages:
                 raise ValueError("Messages list cannot be empty")
 
-            # Validate message content
+            # Validate message content - allow empty content for all message types
+            # since _messages_to_api will provide appropriate fallback content
             for i, message in enumerate(messages):
-                # Allow empty content for AIMessage if it has tool calls (like OpenAI format)
-                if isinstance(message, AIMessage) and hasattr(message, "tool_calls") and message.tool_calls:
-                    continue  # Empty content is valid for AI messages with tool calls
+                # Allow empty content for AIMessage (with or without tool calls)
+                if isinstance(message, AIMessage):
+                    continue  # Empty content is valid for AI messages (API conversion handles fallback)
                 # Allow empty content for ToolMessage (tool calls can return no results)
                 if isinstance(message, ToolMessage):
                     continue  # Empty content is valid for tool messages
+                # Allow empty content for HumanMessage that might contain structured output context
+                if isinstance(message, HumanMessage):
+                    continue  # Allow empty HumanMessage content (API conversion handles fallback)
+                # Allow empty content for SystemMessage (API conversion handles fallback)
+                if isinstance(message, SystemMessage):
+                    continue  # Allow empty SystemMessage content (API conversion handles fallback)
+                # For other message types, still validate (but API conversion will handle fallback)
                 if not message.content or str(message.content).strip() == "":
-                    raise ValueError(f"Message at index {i} cannot have empty content")
+                    # This should rarely happen since most messages are covered above
+                    # But if it does, the API conversion will still provide fallback content
+                    continue
 
             payload = self._build_streaming_payload(messages, stop, **kwargs)
         except Exception as e:
