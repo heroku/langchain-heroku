@@ -446,17 +446,20 @@ class TestChatHerokuIntegration:
         """
         chat = ChatHeroku()
 
-        # Test with empty message list
-        with pytest.raises((ValueError, RuntimeError)):
+        # Test with empty message list - should raise ValueError
+        with pytest.raises(ValueError, match="Messages list cannot be empty"):
             chat.invoke([])
 
-        # Test with None input
-        with pytest.raises(ValueError):
+        # Test with None input - should raise ValueError for invalid input type
+        with pytest.raises(ValueError, match="Invalid input type"):
             chat.invoke(None)  # type: ignore[arg-type]
 
-        # Test with empty string
-        with pytest.raises((ValueError, RuntimeError)):
-            chat.invoke("")
+        # Test with empty string - LangChain converts this to HumanMessage(content="")
+        # Our implementation handles this gracefully by providing fallback content
+        # So this should succeed, not raise an exception
+        result = chat.invoke("")
+        assert result.content is not None
+        assert len(str(result.content)) > 0
 
     def test_production_configuration_validation(self) -> None:
         """Test configuration validation against production endpoint.

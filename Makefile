@@ -23,6 +23,9 @@ integration_test integration_tests:
 langgraph_test:
 	poetry run pytest tests/integration_tests/test_langgraph_101_integration.py -v -s
 
+embeddings_test:
+	poetry run pytest tests/integration_tests/test_embeddings_integration.py -v -s
+
 ######################
 # LINTING AND FORMATTING
 ######################
@@ -103,9 +106,5 @@ help:
 	@echo 'tests                      - run unit tests'
 	@echo 'test_watch                 - run tests in watch mode'
 	@echo 'langgraph_test             - test LangGraph 101 integration with ChatHeroku'
-	@echo 'langgraph_quick            - quick test of LangGraph 101 with ChatHeroku'
-	@echo 'langgraph_demo             - demo of LangGraph 101 with ChatHeroku'
-	@echo 'langgraph_robust           - robust implementation with fixes for common issues'
-	@echo 'langgraph_working          - working example that fixes all issues'
 	@echo 'integration_tests          - run integration tests'
 	@echo 'test TEST_FILE=<test_file> - run all tests in file'
