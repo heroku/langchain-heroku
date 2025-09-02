@@ -54,7 +54,8 @@ class ToolConverter:
                 # Get the JSON schema from the Pydantic model
                 if hasattr(tool.args_schema, "model_json_schema"):
                     schema = tool.args_schema.model_json_schema()
-                    function_def["parameters"] = schema
+                    # Clean schema for API compatibility
+                    function_def["parameters"] = ToolConverter._clean_schema_for_api(schema)
             except Exception:
                 # Fallback if schema extraction fails
                 pass
@@ -98,7 +99,8 @@ class ToolConverter:
         try:
             if hasattr(tool, "model_json_schema"):
                 schema = tool.model_json_schema()
-                function_def["parameters"] = schema
+                # Clean schema for API compatibility
+                function_def["parameters"] = ToolConverter._clean_schema_for_api(schema)
         except Exception:
             pass
 
@@ -169,3 +171,35 @@ class ToolConverter:
                     param_info["type"] = "array"
 
         return param_info
+
+    @staticmethod
+    def _clean_schema_for_api(schema: Dict[str, Any]) -> Dict[str, Any]:
+        """Clean JSON schema to remove fields not supported by Heroku Inference API.
+
+        The API doesn't support certain JSON schema fields like 'title', 'description'
+        in nested objects, so we need to remove them for compatibility.
+        """
+        if not isinstance(schema, dict):
+            return schema
+
+        # Create a clean copy
+        clean_schema = {}
+
+        # Allowed top-level fields for function parameters
+        allowed_fields = {"type", "properties", "required", "items", "enum", "default"}
+
+        for key, value in schema.items():
+            if key in allowed_fields:
+                if key == "properties" and isinstance(value, dict):
+                    # Clean properties recursively
+                    clean_properties = {}
+                    for prop_name, prop_schema in value.items():
+                        clean_properties[prop_name] = ToolConverter._clean_schema_for_api(prop_schema)
+                    clean_schema[key] = clean_properties
+                elif key == "items" and isinstance(value, dict):
+                    # Clean items schema
+                    clean_schema[key] = ToolConverter._clean_schema_for_api(value)
+                else:
+                    clean_schema[key] = value
+
+        return clean_schema

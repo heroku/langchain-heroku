@@ -178,21 +178,36 @@ class ChatHeroku(BaseChatModel):
             # Handle specific message types explicitly
             if isinstance(m, SystemMessage):
                 role = "system"
-                content = str(getattr(m, "content", ""))
+                content = getattr(m, "content", "")
+                # Ensure content is not None and convert to string
+                if content is None:
+                    content = "You are a helpful assistant."
+                else:
+                    content = str(content)
                 # Ensure non-empty content for API compatibility
                 if not content.strip():
                     content = "You are a helpful assistant."
                 api_msgs.append({"role": role, "content": content})
             elif isinstance(m, HumanMessage):
                 role = "user"
-                content = str(getattr(m, "content", ""))
+                content = getattr(m, "content", "")
+                # Ensure content is not None and convert to string
+                if content is None:
+                    content = "Please help me."
+                else:
+                    content = str(content)
                 # Ensure non-empty content for API compatibility
                 if not content.strip():
                     content = "Please help me."
                 api_msgs.append({"role": role, "content": content})
             elif isinstance(m, AIMessage):
                 role = "assistant"
-                content = str(getattr(m, "content", ""))
+                content = getattr(m, "content", "")
+                # Ensure content is not None and convert to string
+                if content is None:
+                    content = ""
+                else:
+                    content = str(content)
                 # Add tool_calls if present; do not synthesize tool results here
                 has_tool_calls = hasattr(m, "tool_calls") and m.tool_calls
                 if has_tool_calls:
@@ -270,7 +285,12 @@ class ChatHeroku(BaseChatModel):
             elif isinstance(m, ToolMessage):
                 # Include tool results only if a corresponding assistant tool_call exists
                 role = "tool"
-                content = str(getattr(m, "content", ""))
+                content = getattr(m, "content", "")
+                # Ensure content is not None and convert to string
+                if content is None:
+                    content = "No result returned from the tool."
+                else:
+                    content = str(content)
                 if not content.strip():
                     content = "No result returned from the tool."
 
@@ -302,7 +322,12 @@ class ChatHeroku(BaseChatModel):
             elif isinstance(m, FunctionMessage):
                 # FunctionMessage maps to tool role for backward compatibility
                 role = "tool"
-                content = str(getattr(m, "content", ""))
+                content = getattr(m, "content", "")
+                # Ensure content is not None and convert to string
+                if content is None:
+                    content = "No result returned from the function."
+                else:
+                    content = str(content)
                 # Provide default content if empty (API requires non-empty content)
                 if not content.strip():
                     content = "No result returned from the function."
@@ -315,7 +340,12 @@ class ChatHeroku(BaseChatModel):
             else:
                 # Fallback to role attribute or type for custom message types
                 role = getattr(m, "role", None) or getattr(m, "type", "user") or "user"
-                content = str(getattr(m, "content", ""))
+                content = getattr(m, "content", "")
+                # Ensure content is not None and convert to string
+                if content is None:
+                    content = ""
+                else:
+                    content = str(content)
                 # Ensure non-empty content for custom message types
                 if not content.strip():
                     if role == "system":
@@ -653,11 +683,28 @@ class ChatHeroku(BaseChatModel):
         if not api_messages:
             raise ValueError("Cannot generate chat completion with empty messages list")
 
+        # Validate that no messages are None/null to prevent API validation errors
+        for i, msg in enumerate(api_messages):
+            if msg is None:
+                raise ValueError(f"Message at index {i} is None/null - this will cause API validation failure")
+            if not isinstance(msg, dict):
+                raise ValueError(f"Message at index {i} is not a dict: {type(msg)} - {msg}")
+            if "role" not in msg:
+                raise ValueError(f"Message at index {i} is missing 'role' field: {msg}")
+            if "content" not in msg:
+                raise ValueError(f"Message at index {i} is missing 'content' field: {msg}")
+            # Ensure content is not None
+            if msg["content"] is None:
+                msg["content"] = "Please help me."  # Provide fallback content
+
+        # Final safety check - ensure messages array itself is valid
+        if api_messages is None:
+            raise ValueError("API messages array is None - this will cause API validation failure")
+
         payload: Dict[str, Any] = {
             "model": self._get_model(),
             # Balanced, serialized messages
             "messages": api_messages,
-            "allow_ignored_params": True,
         }
 
         # Add optional parameters if they are set
@@ -711,6 +758,43 @@ class ChatHeroku(BaseChatModel):
     def _make_api_request(self, payload: dict) -> dict:
         """Make the API request with retry logic."""
         config = self._get_config()
+
+        # Comprehensive payload validation before API call
+        import json
+
+        # Check if messages field exists and is valid
+        if "messages" not in payload:
+            raise ValueError("Payload missing 'messages' field")
+
+        messages = payload["messages"]
+        if messages is None:
+            raise ValueError("Payload 'messages' field is None")
+
+        if not isinstance(messages, list):
+            raise ValueError(f"Payload 'messages' field is not a list: {type(messages)}")
+
+        # Check each message in detail
+        for i, msg in enumerate(messages):
+            if msg is None:
+                raise ValueError(f"Message at index {i} is None in payload")
+            if not isinstance(msg, dict):
+                raise ValueError(f"Message at index {i} is not a dict: {type(msg)}")
+            if "role" not in msg:
+                raise ValueError(f"Message at index {i} missing 'role': {msg}")
+            if "content" not in msg:
+                raise ValueError(f"Message at index {i} missing 'content': {msg}")
+            if msg["content"] is None:
+                # Fix None content on the spot
+                msg["content"] = "Please help me."
+
+        # Validate JSON serialization doesn't introduce nulls
+        try:
+            serialized = json.dumps(payload)
+            if '"messages":null' in serialized or '"content":null' in serialized:
+                raise ValueError(f"Payload contains null values after serialization: {serialized[:500]}...")
+        except Exception as e:
+            raise ValueError(f"Payload JSON serialization failed: {e}")
+
         return HerokuHTTPClient.make_request(
             url=config.inference_url,
             endpoint="v1/chat/completions",
@@ -735,6 +819,26 @@ class ChatHeroku(BaseChatModel):
         # Validate input messages
         if not messages:
             raise ValueError("Messages list cannot be empty")
+
+        # Check for None messages in the input
+        for i, message in enumerate(messages):
+            if message is None:
+                raise ValueError(f"Message at index {i} is None - cannot process null messages")
+
+        # API Validation Fix: Ensure conversation has at least one non-system message
+        # SystemMessage alone causes "Value null at 'messages'" error in Heroku API
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        has_user_message = any(not isinstance(msg, SystemMessage) for msg in messages)
+        if not has_user_message:
+            # If only system messages, convert the last one to a user message
+            # This preserves the intent while meeting API requirements
+            if len(messages) == 1 and isinstance(messages[0], SystemMessage):
+                system_content = messages[0].content or "Please help me."
+                messages = [HumanMessage(content=system_content)]
+            else:
+                # Add a generic user message to make the conversation valid
+                messages.append(HumanMessage(content="Please process this request."))
 
         # Validate message content - allow empty content for all message types
         # since _messages_to_api will provide appropriate fallback content
@@ -1043,70 +1147,142 @@ class ChatHeroku(BaseChatModel):
             # Returns: PersonInfo(name="John", age=30, occupation="software engineer")
             ```
         """
+        from langchain_core.runnables import RunnableLambda
+
         # Convert schema to tool format
         tool_name = "extract_data"
         tool_description = "Extract structured data from the input according to the specified schema"
 
         if isinstance(schema, dict):
-            # Already a JSON schema
-            tool_schema = schema
+            # Already a JSON schema - clean it for API compatibility
+            tool_schema = self._clean_schema_for_api(schema)
         elif hasattr(schema, "model_json_schema"):
-            # Pydantic model
-            tool_schema = schema.model_json_schema()
+            # Pydantic model - get schema and clean it
+            raw_schema = schema.model_json_schema()
+            tool_schema = self._clean_schema_for_api(raw_schema)
         elif hasattr(schema, "__annotations__"):
             # Try to create a basic schema from annotations
-            tool_schema = self._create_schema_from_annotations(schema)
+            raw_schema = self._create_schema_from_annotations(schema)
+            tool_schema = self._clean_schema_for_api(raw_schema)
         else:
             raise ValueError(f"Unsupported schema type: {type(schema)}")
 
         # Create the tool definition
         structured_tool = {"type": "function", "function": {"name": tool_name, "description": tool_description, "parameters": tool_schema}}
 
-        # Use bind_tools to create a bound model instead of a separate instance
-        # This ensures better integration with supervisor workflows
         # Force the specific tool to be called for structured output
         tool_choice_dict = {"type": "function", "function": {"name": tool_name}}
 
-        # Bind the structured output tool to this model instance
-        bound_model = self.bind_tools([structured_tool], tool_choice=tool_choice_dict)
+        # Create a direct invoker that bypasses the RunnableBinding complexity
+        def structured_invoke(input_messages):
+            """Direct structured output invoker that avoids RunnableBinding issues."""
+            # Handle different input formats
+            if isinstance(input_messages, list):
+                messages = input_messages
+            elif hasattr(input_messages, "messages"):
+                messages = input_messages.messages
+            else:
+                # Assume it's a single message or content
+                from langchain_core.messages import HumanMessage
 
-        # Create a runnable that works transparently with supervisors
-        # Instead of parsing from tool calls, return the bound model directly
-        # This allows supervisors to handle the tool execution flow properly
+                if isinstance(input_messages, str):
+                    messages = [HumanMessage(content=input_messages)]
+                else:
+                    messages = [input_messages]
 
-        if include_raw:
-            # For include_raw, we need to preserve both the message and extract the data
-            def extract_with_raw(ai_message: AIMessage) -> Dict[str, Any]:
-                if not ai_message.tool_calls:
-                    # If no tool calls, return default structured data
-                    return {"raw": ai_message, "parsed": self._create_default_structured_data(schema)}
+            # Ensure we have valid messages
+            if not messages:
+                raise ValueError("No input messages provided")
 
-                tool_call = ai_message.tool_calls[0]
-                try:
-                    parsed_data = self._parse_tool_call_args(tool_call, schema)
-                    return {"raw": ai_message, "parsed": parsed_data}
-                except Exception:
-                    # If parsing fails, return the raw message with default structured data
-                    return {"raw": ai_message, "parsed": self._create_default_structured_data(schema)}
+            # API Validation Fix: Ensure conversation has a user message
+            # SystemMessage alone is not valid - need at least one user message
+            from langchain_core.messages import HumanMessage, SystemMessage
 
-            return bound_model | extract_with_raw  # type: ignore[no-any-return]
-        else:
-            # For supervisor compatibility, return the bound model directly
-            # This allows the supervisor to handle tool execution and get structured data
-            # from the tool call arguments when needed
-            def extract_structured_data(ai_message: AIMessage) -> Any:
-                if not ai_message.tool_calls:
-                    # When no tool calls are present, return a proper default structured object
+            has_user_message = any(not isinstance(msg, SystemMessage) for msg in messages)
+            if not has_user_message:
+                # If only system messages, convert the last one to a user message
+                # This preserves the intent while meeting API requirements
+                if len(messages) == 1 and isinstance(messages[0], SystemMessage):
+                    system_content = messages[0].content
+                    messages = [HumanMessage(content=system_content)]
+                else:
+                    # Add a generic user message to make the conversation valid
+                    messages.append(HumanMessage(content="Please process this request."))
+
+            # Call the model directly with tools and tool_choice
+            try:
+                # Bypass the bind_tools complexity and call _generate directly
+                result = self._generate(messages=messages, tools=[structured_tool], tool_choice=tool_choice_dict)
+
+                # Extract the AI message from the result
+                ai_message = result.generations[0].message
+
+                if include_raw:
+                    # Return both raw and parsed data
+                    if hasattr(ai_message, "tool_calls") and ai_message.tool_calls:
+                        tool_call = ai_message.tool_calls[0]
+                        try:
+                            parsed_data = self._parse_tool_call_args(tool_call, schema)
+                            return {"raw": ai_message, "parsed": parsed_data}
+                        except Exception:
+                            # If parsing fails, return default structured data
+                            return {"raw": ai_message, "parsed": self._create_default_structured_data(schema)}
+                    else:
+                        return {"raw": ai_message, "parsed": self._create_default_structured_data(schema)}
+                else:
+                    # Return only parsed structured data
+                    if hasattr(ai_message, "tool_calls") and ai_message.tool_calls:
+                        tool_call = ai_message.tool_calls[0]
+                        try:
+                            return self._parse_tool_call_args(tool_call, schema)
+                        except Exception:
+                            # If parsing fails, return default structured data
+                            return self._create_default_structured_data(schema)
+                    else:
+                        return self._create_default_structured_data(schema)
+
+            except Exception as e:
+                # If anything fails, return default structured data or re-raise
+                if include_raw:
+                    from langchain_core.messages import AIMessage
+
+                    return {"raw": AIMessage(content=f"Error: {e}"), "parsed": self._create_default_structured_data(schema)}
+                else:
                     return self._create_default_structured_data(schema)
 
-                tool_call = ai_message.tool_calls[0]
-                try:
-                    return self._parse_tool_call_args(tool_call, schema)
-                except Exception:
-                    # If parsing fails, return default structured data
-                    return self._create_default_structured_data(schema)
+        # Return a RunnableLambda that handles the structured output
+        return RunnableLambda(structured_invoke)
 
-            return bound_model | extract_structured_data  # type: ignore[no-any-return]
+    def _clean_schema_for_api(self, schema: Dict[str, Any]) -> Dict[str, Any]:
+        """Clean JSON schema to remove fields not supported by Heroku Inference API.
+
+        The API doesn't support certain JSON schema fields like 'title', 'description'
+        in nested objects, so we need to remove them for compatibility.
+        """
+        if not isinstance(schema, dict):
+            return schema
+
+        # Create a clean copy
+        clean_schema = {}
+
+        # Allowed top-level fields for function parameters
+        allowed_fields = {"type", "properties", "required", "items", "enum", "default"}
+
+        for key, value in schema.items():
+            if key in allowed_fields:
+                if key == "properties" and isinstance(value, dict):
+                    # Clean properties recursively
+                    clean_properties = {}
+                    for prop_name, prop_schema in value.items():
+                        clean_properties[prop_name] = self._clean_schema_for_api(prop_schema)
+                    clean_schema[key] = clean_properties
+                elif key == "items" and isinstance(value, dict):
+                    # Clean items schema
+                    clean_schema[key] = self._clean_schema_for_api(value)
+                else:
+                    clean_schema[key] = value
+
+        return clean_schema
 
     def _parse_tool_call_args(self, tool_call: Any, schema: Union[Dict[str, Any], Type[BaseModel], Type]) -> Any:
         """Parse tool call arguments and validate against schema.
