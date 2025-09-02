@@ -19,6 +19,13 @@ test_watch:
 integration_test integration_tests:
 	poetry run pytest $(TEST_FILE)
 
+# LangGraph 101 integration tests with ChatHeroku
+langgraph_test:
+	poetry run pytest tests/integration_tests/test_langgraph_101_integration.py -v -s
+
+embeddings_test:
+	poetry run pytest tests/integration_tests/test_embeddings_integration.py -v -s
+
 ######################
 # LINTING AND FORMATTING
 ######################
@@ -98,5 +105,6 @@ help:
 	@echo 'test                       - run unit tests'
 	@echo 'tests                      - run unit tests'
 	@echo 'test_watch                 - run tests in watch mode'
+	@echo 'langgraph_test             - test LangGraph 101 integration with ChatHeroku'
 	@echo 'integration_tests          - run integration tests'
 	@echo 'test TEST_FILE=<test_file> - run all tests in file'

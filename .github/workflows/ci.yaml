@@ -36,8 +36,8 @@ jobs:
           restore-keys: |
             venv-${{ runner.os }}-
 
-      - name: Install dependencies (including test, lint, and typing)
-        run: poetry install --with test,lint,typing
+      - name: Install dependencies (including test, lint, typing, and test_integration)
+        run: poetry install --with test,lint,typing,test_integration
 
       - name: Run linting checks
         run: |
@@ -88,12 +88,14 @@ jobs:
           restore-keys: |
             venv-${{ runner.os }}-
 
-      - name: Install dependencies (including test, lint, and typing)
-        run: poetry install --with test,lint,typing
+      - name: Install dependencies (including test, lint, typing, and test_integration)
+        run: poetry install --with test,lint,typing,test_integration
 
       - name: Run integration tests
         env:
           INFERENCE_URL: ${{ vars.INFERENCE_URL }}
           INFERENCE_MODEL_ID: ${{ vars.INFERENCE_MODEL_ID }}
           INFERENCE_KEY: ${{ secrets.INFERENCE_KEY }}
+          INFERENCE_EMBEDDING_MODEL_ID: ${{ vars.INFERENCE_EMBEDDING_MODEL_ID }}
+          INFERENCE_EMBEDDING_KEY: ${{ secrets.INFERENCE_EMBEDDING_KEY }}
         run: poetry run pytest tests/integration_tests/ --maxfail=1 --disable-warnings --tb=short 

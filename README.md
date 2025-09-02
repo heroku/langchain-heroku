@@ -16,20 +16,29 @@ langchain-heroku/
   CONTRIBUTING.md
   SECURITY.md
   docs/
-    ...
+    embeddings.ipynb                    # Interactive embeddings examples
+    completions.ipynb                   # Interactive chat completions examples
+    embeddings_integration.md           # Embeddings integration documentation
+    chat_completions_integration.md     # Chat completions integration documentation
+    chat.ipynb                          # Legacy chat examples
   langchain_heroku/
     __init__.py
-    chat_models.py
+    chat_models.py                      # Chat completions integration
+    embeddings.py                       # Embeddings integration
+    config.py                           # Shared configuration management
     py.typed
-    ...
   scripts/
     check_imports.py
     lint_imports.sh
   tests/
     test_chat_models.py
     test_chat_models_integration.py
+    test_embeddings.py                  # Embeddings unit tests
     test_compile.py
-    ...
+    integration_tests/
+      test_embeddings_integration.py    # Embeddings integration tests
+    unit_tests/
+      test_embeddings.py                # Embeddings unit tests
   .gitignore
 ```
 
@@ -91,6 +100,26 @@ To use this integration, you need to set up Heroku's Managed Inference and Agent
 - `claude-3-haiku-latest` - Claude 3 Haiku
 
 **Pricing**: Models are billed per token used. See the [Heroku AI pricing page](https://devcenter.heroku.com/articles/heroku-ai-pricing) for current rates.
+
+## 📚 Documentation
+
+### Interactive Examples
+
+- **[embeddings.ipynb](docs/embeddings.ipynb)** - Interactive Jupyter notebook demonstrating Heroku Embeddings integration
+- **[completions.ipynb](docs/completions.ipynb)** - Interactive Jupyter notebook demonstrating Heroku Chat Completions integration
+
+### Integration Guides
+
+- **[Embeddings Integration](docs/embeddings_integration.md)** - Comprehensive guide for Heroku Embeddings with LangChain
+- **[Chat Completions Integration](docs/chat_completions_integration.md)** - Complete guide for Heroku Chat Completions with LangChain
+
+### Features
+
+- **OpenAI Compatibility**: Drop-in replacement for OpenAI models
+- **Heroku Advanced Features**: Access to Heroku-specific capabilities
+- **Streaming Support**: Real-time streaming for chat completions
+- **Metadata Retrieval**: Access to additional API response information
+- **LangChain Integration**: Seamless integration with LangChain ecosystem
 
 ## 🧪 Running Tests
 
@@ -160,4 +189,63 @@ print(result.content)
 chat = ChatHeroku(streaming=True)
 for chunk in chat.stream([HumanMessage(content="Tell me a story.")]):
     print(chunk.content, end="")
+```
+
+### Tool Calling
+
+`ChatHeroku` supports tool calling with various tool formats:
+
+```python
+from langchain_heroku import ChatHeroku
+from langchain_core.messages import HumanMessage
+from langchain_core.tools import BaseTool
+from pydantic import BaseModel, Field
+from typing import Optional
+
+# Using function tools
+def get_weather(location: str, unit: str = "celsius") -> str:
+    """Get weather information for a location."""
+    return f"Weather in {location}: 22°{unit[0].upper()}, sunny"
+
+# Using BaseTool
+class SearchInput(BaseModel):
+    query: str = Field(description="The search query")
+    limit: Optional[int] = Field(default=10, description="Number of results")
+
+class SearchTool(BaseTool):
+    name: str = "search"
+    description: str = "Search for information"
+    args_schema = SearchInput
+    
+    def _run(self, query: str, limit: Optional[int] = 10) -> str:
+        return f"Search results for '{query}' (limit: {limit})"
+
+# Using dict format tools
+dict_tool = {
+    "type": "function",
+    "function": {
+        "name": "calculate",
+        "description": "Perform calculations",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "expression": {"type": "string", "description": "Math expression"}
+            },
+            "required": ["expression"]
+        }
+    }
+}
+
+# Bind tools to the model
+chat = ChatHeroku()
+chat_with_tools = chat.bind_tools([get_weather, SearchTool(), dict_tool])
+
+# Use with tool choice
+chat_required = chat.bind_tools([get_weather], tool_choice="required")
+chat_auto = chat.bind_tools([get_weather], tool_choice="auto")
+
+# Invoke with tools
+messages = [HumanMessage(content="What's the weather in New York?")]
+result = chat_with_tools.invoke(messages)
+print(result.content)
 ```
