@@ -526,9 +526,9 @@ def demo_exercise_5_multi_agent_supervisor() -> bool:
         Return END if no further action is needed.
         """
 
-        def supervisor(state: State, config: RunnableConfig) -> Command[Literal["music_catalog_subagent", "invoice_information_subagent", "END"]]:
+        def supervisor(state: State, config: RunnableConfig) -> Command[Literal["music_catalog_subagent", "invoice_information_subagent", "__end__"]]:
             result = router_model.invoke([SystemMessage(content=supervisor_prompt)] + state["messages"])
-
+            print(f"Supervisor result: {result}")
             if result.subagent == "END":
                 summary_prompt = "Summarize the conversation and provide final response."
                 final_message = model.invoke([SystemMessage(content=summary_prompt)] + state["messages"])

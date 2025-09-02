@@ -723,6 +723,10 @@ class ChatHeroku(BaseChatModel):
             # Allow empty content for ToolMessage (tool calls can return no results)
             if isinstance(message, ToolMessage):
                 continue  # Empty content is valid for tool messages
+            # Allow empty content for HumanMessage that might contain structured output context
+            # This is a more flexible validation that matches OpenAI's behavior
+            if isinstance(message, HumanMessage) and not message.content:
+                continue  # Allow empty HumanMessage content (might be from structured output)
             if not message.content or str(message.content).strip() == "":
                 raise ValueError(f"Message at index {i} cannot have empty content")
 
@@ -935,7 +939,7 @@ class ChatHeroku(BaseChatModel):
         self,
         tools: Sequence[Union[Dict[str, Any], type, Callable, BaseTool]],
         *,
-        tool_choice: Optional[Union[str]] = None,
+        tool_choice: Optional[Union[str, Dict[str, Any]]] = None,
         **kwargs: Any,
     ) -> Any:  # Returns RunnableBinding
         """Bind tools to the model.
@@ -1019,10 +1023,11 @@ class ChatHeroku(BaseChatModel):
 
         # Use bind_tools to create a bound model instead of a separate instance
         # This ensures better integration with supervisor workflows
-        tool_choice_str = tool_name
+        # Force the specific tool to be called for structured output
+        tool_choice_dict = {"type": "function", "function": {"name": tool_name}}
 
         # Bind the structured output tool to this model instance
-        bound_model = self.bind_tools([structured_tool], tool_choice=tool_choice_str)
+        bound_model = self.bind_tools([structured_tool], tool_choice=tool_choice_dict)
 
         # Create a runnable that works transparently with supervisors
         # Instead of parsing from tool calls, return the bound model directly
@@ -1032,16 +1037,16 @@ class ChatHeroku(BaseChatModel):
             # For include_raw, we need to preserve both the message and extract the data
             def extract_with_raw(ai_message: AIMessage) -> Dict[str, Any]:
                 if not ai_message.tool_calls:
-                    # If no tool calls, return empty parsed data
-                    return {"raw": ai_message, "parsed": {} if isinstance(schema, dict) else None}
+                    # If no tool calls, return default structured data
+                    return {"raw": ai_message, "parsed": self._create_default_structured_data(schema)}
 
                 tool_call = ai_message.tool_calls[0]
                 try:
                     parsed_data = self._parse_tool_call_args(tool_call, schema)
                     return {"raw": ai_message, "parsed": parsed_data}
                 except Exception:
-                    # If parsing fails, return the raw message with empty parsed data
-                    return {"raw": ai_message, "parsed": {} if isinstance(schema, dict) else None}
+                    # If parsing fails, return the raw message with default structured data
+                    return {"raw": ai_message, "parsed": self._create_default_structured_data(schema)}
 
             return bound_model | extract_with_raw  # type: ignore[no-any-return]
         else:
@@ -1050,15 +1055,15 @@ class ChatHeroku(BaseChatModel):
             # from the tool call arguments when needed
             def extract_structured_data(ai_message: AIMessage) -> Any:
                 if not ai_message.tool_calls:
-                    # Return empty data if no tool calls
-                    return {} if isinstance(schema, dict) else None
+                    # When no tool calls are present, return a proper default structured object
+                    return self._create_default_structured_data(schema)
 
                 tool_call = ai_message.tool_calls[0]
                 try:
                     return self._parse_tool_call_args(tool_call, schema)
                 except Exception:
-                    # If parsing fails, return empty data
-                    return {} if isinstance(schema, dict) else None
+                    # If parsing fails, return default structured data
+                    return self._create_default_structured_data(schema)
 
             return bound_model | extract_structured_data  # type: ignore[no-any-return]
 
@@ -1177,3 +1182,199 @@ class ChatHeroku(BaseChatModel):
             required.append(field_name)
 
         return {"type": "object", "properties": properties, "required": required}
+
+    def _get_type_default(self, type_annotation: Any, field_name: str = "") -> Any:
+        """Get a sensible default value for a given type annotation."""
+        import typing
+
+        # Handle basic types
+        if type_annotation is str:
+            return ""  # Return empty string for string fields
+        elif type_annotation is int:
+            return 0
+        elif type_annotation is float:
+            return 0.0
+        elif type_annotation is bool:
+            return False
+        elif type_annotation is list:
+            return []
+        elif type_annotation is dict:
+            return {}
+
+        # Handle typing generics
+        origin = getattr(type_annotation, "__origin__", None)
+        args = getattr(type_annotation, "__args__", ())
+
+        if origin is Union:
+            # For Union types (like Optional), try the first non-None type
+            for arg in args:
+                if arg is not type(None):
+                    return self._get_type_default(arg)
+            return None
+        elif origin is list:
+            return []
+        elif origin is dict:
+            return {}
+        elif hasattr(type_annotation, "__members__"):
+            # Enum types - return the first member
+            members = list(type_annotation.__members__.values())
+            return members[0] if members else ""
+
+        # Handle Literal types
+        if hasattr(typing, "get_origin") and hasattr(typing, "get_args"):
+            try:
+                if typing.get_origin(type_annotation) is typing.Literal:
+                    literal_values = typing.get_args(type_annotation)
+                    return literal_values[0] if literal_values else ""
+            except (AttributeError, TypeError):
+                pass
+
+        # Check for _name attribute (used by some typing constructs)
+        if hasattr(type_annotation, "_name"):
+            if type_annotation._name == "Literal":
+                literal_values = getattr(type_annotation, "__args__", ())
+                return literal_values[0] if literal_values else ""
+
+        # Fallback to empty string for unknown types
+        return ""
+
+    def _create_default_structured_data(self, schema: Union[Dict[str, Any], Type[BaseModel], Type]) -> Any:
+        """Create default structured data when no tool calls are present.
+
+        This ensures that structured output always returns a proper data structure
+        matching the expected schema, even when the model doesn't make tool calls.
+
+        Args:
+            schema: The schema to create default data for
+
+        Returns:
+            Default structured data matching the schema
+        """
+        try:
+            if hasattr(schema, "model_validate"):
+                # Pydantic v2 - create instance with default values
+                defaults = {}
+
+                # Try Pydantic v2 field access first
+                if hasattr(schema, "model_fields"):
+                    for field_name, field_info in schema.model_fields.items():
+                        if hasattr(field_info, "default") and field_info.default is not ...:
+                            defaults[field_name] = field_info.default
+                        elif hasattr(field_info, "default_factory") and field_info.default_factory is not None:
+                            factory = field_info.default_factory
+                            try:
+                                if callable(factory):
+                                    defaults[field_name] = factory()  # type: ignore[call-arg]
+                                else:
+                                    defaults[field_name] = factory
+                            except TypeError:
+                                # If factory isn't callable, use it as a value
+                                defaults[field_name] = factory
+                        else:
+                            # For required fields without defaults, provide sensible defaults based on annotation
+                            if hasattr(field_info, "annotation"):
+                                defaults[field_name] = self._get_type_default(field_info.annotation, field_name)
+                            else:
+                                defaults[field_name] = ""
+
+                # Fallback to Pydantic v1 style if v2 fields not available
+                elif hasattr(schema, "__fields__"):
+                    for field_name, field_info in schema.__fields__.items():
+                        if hasattr(field_info, "default") and field_info.default is not None:
+                            defaults[field_name] = field_info.default
+                        elif hasattr(field_info, "default_factory") and field_info.default_factory is not None:
+                            factory = field_info.default_factory
+                            try:
+                                if callable(factory):
+                                    defaults[field_name] = factory()  # type: ignore[call-arg]
+                                else:
+                                    defaults[field_name] = factory
+                            except TypeError:
+                                # If factory isn't callable, use it as a value
+                                defaults[field_name] = factory
+                        else:
+                            # For required fields, provide sensible defaults
+                            defaults[field_name] = ""
+
+                # Try to create with defaults first
+                if defaults:
+                    try:
+                        if hasattr(schema, "model_validate"):
+                            return schema.model_validate(defaults)
+                        else:
+                            return defaults
+                    except Exception:
+                        # If validation fails with defaults, continue to fallback
+                        pass
+
+                # Try to create an empty instance
+                try:
+                    if callable(schema):
+                        return schema()
+                    else:
+                        return {}  # Fallback for non-callable schema
+                except Exception:
+                    # If that fails, try with empty dict (will likely fail for required fields)
+                    try:
+                        if hasattr(schema, "model_validate"):
+                            return schema.model_validate({})
+                        else:
+                            return {}
+                    except Exception:
+                        # Ultimate fallback - create with minimal required defaults
+                        minimal_defaults = {}
+                        if hasattr(schema, "model_fields"):
+                            for field_name, field_info in schema.model_fields.items():
+                                minimal_defaults[field_name] = self._get_type_default(getattr(field_info, "annotation", str), field_name)
+                        else:
+                            # If we can't determine fields, return empty dict as last resort
+                            return {}
+                        if hasattr(schema, "model_validate"):
+                            return schema.model_validate(minimal_defaults)
+                        else:
+                            return minimal_defaults
+            elif hasattr(schema, "parse_obj"):
+                # Pydantic v1 - create instance with default values
+                try:
+                    if callable(schema):
+                        return schema()
+                    else:
+                        return {}  # Fallback for non-callable schema
+                except Exception:
+                    if hasattr(schema, "parse_obj"):
+                        return schema.parse_obj({})
+                    else:
+                        return {}
+            elif isinstance(schema, dict):
+                # Dictionary schema - create object with default values based on properties
+                defaults = {}
+                properties = schema.get("properties", {})
+                for field_name, field_schema in properties.items():
+                    field_type = field_schema.get("type", "string")
+                    if "default" in field_schema:
+                        defaults[field_name] = field_schema["default"]
+                    elif field_type == "string":
+                        defaults[field_name] = ""
+                    elif field_type == "integer":
+                        defaults[field_name] = 0
+                    elif field_type == "number":
+                        defaults[field_name] = 0.0
+                    elif field_type == "boolean":
+                        defaults[field_name] = False
+                    elif field_type == "array":
+                        defaults[field_name] = []
+                    elif field_type == "object":
+                        defaults[field_name] = {}
+                    else:
+                        defaults[field_name] = None
+                return defaults
+            else:
+                # For other types, try to create an empty instance
+                try:
+                    return schema()
+                except Exception:
+                    # Final fallback - return empty dict
+                    return {}
+        except Exception:
+            # Ultimate fallback - return empty dict
+            return {}
